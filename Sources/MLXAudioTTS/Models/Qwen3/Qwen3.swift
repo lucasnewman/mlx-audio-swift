@@ -804,7 +804,6 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
         let configData = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(Qwen3Configuration.self, from: configData)
 
-        let quantization = config.quantization
         let perLayerQuantization = config.perLayerQuantization
 
         let model = Qwen3Model(config)
@@ -817,11 +816,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
 
         // Quantize if needed
 
-        if quantization != nil {
+        if perLayerQuantization != nil {
             print("Applying quantizaiton from config...")
-            if let quant = quantization {
-                print(" Default: groupSize=\(quant.groupSize), bits=\(quant.bits)")
-            }
+
             if let perLayerQuant = perLayerQuantization {
                 print(" Per-layer: \(perLayerQuant)")
             }
@@ -829,16 +826,13 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
             quantize(model: model) { path, module in
                 // Only quantize if scales exist for this layer
                 if weights["\(path).scales"] != nil {
-                    if perLayerQuantization != nil {
-                        return perLayerQuantization?.quantization(layer: path)?.asTuple
-                    } else {
-                        return quantization?.asTuple
-                    }
+                    return perLayerQuantization?.quantization(layer: path)?.asTuple
                 } else {
                     return nil
                 }
             }
         }
+
 
 
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
