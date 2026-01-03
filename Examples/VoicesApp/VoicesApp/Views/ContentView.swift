@@ -86,6 +86,7 @@ struct CompactSlider: View {
 #endif
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = TTSViewModel()
     @State private var textInput = ""
     @State private var selectedVoice: Voice?
@@ -95,8 +96,8 @@ struct ContentView: View {
     @State private var customVoices: [Voice] = Voice.customVoices
 
     #if os(iOS)
-    private let buttonHeight: CGFloat = 36
-    private let buttonFont: Font = .footnote
+    private let buttonHeight: CGFloat = 44
+    private let buttonFont: Font = .callout
     private let inputFont: Font = .body
     #else
     private let buttonHeight: CGFloat = 44
@@ -266,6 +267,12 @@ struct ContentView: View {
         }
         .task {
             await viewModel.loadModel()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                // Reset flag when app becomes active again
+                viewModel.handleAppBecameActive()
+            }
         }
     }
 

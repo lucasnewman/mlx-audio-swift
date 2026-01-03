@@ -207,9 +207,15 @@ class TTSViewModel {
         do {
             // Split text into chunks
             let chunks = chunkText(text)
-            var audioSamples: [Float] = []  // Store on CPU for saving to file
-            var totalTokenCount = 0
             let sampleRate = Double(model.sampleRate)
+
+            // Create streaming WAV writer - writes directly to file
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("wav")
+            let wavWriter = try StreamingWAVWriter(url: tempURL, sampleRate: sampleRate)
+
+            var totalTokenCount = 0
 
             // Start streaming playback if enabled and we have multiple chunks
             let useStreaming = streamingPlayback && chunks.count > 1
@@ -228,10 +234,8 @@ class TTSViewModel {
                 var chunkTokenCount = 0
                 var audio: MLXArray?
 
-                // Set aggressive cache limit to reduce peak memory during generation
-                Memory.cacheLimit = 1024 * 1024 * 1024  // 1GB cache limit
-
-                print("GPU memory before generation - Active: \(Double(Memory.activeMemory)/1e9) GB")
+                // Set cache limit for this chunk
+                Memory.cacheLimit = 512 * 1024 * 1024  // 512MB cache limit
 
                 // Each chunk needs a fresh cache - don't reuse across chunks
                 for try await event in model.generateStream(
@@ -253,7 +257,7 @@ class TTSViewModel {
                     case .token:
                         chunkTokenCount += 1
                         totalTokenCount += 1
-                        if chunkTokenCount % 10 == 0 {
+                        if chunkTokenCount % 50 == 0 {
                             if chunks.count > 1 {
                                 generationProgress = "Chunk \(index + 1)/\(chunks.count): \(chunkTokenCount) tokens..."
                             } else {
@@ -267,27 +271,30 @@ class TTSViewModel {
                     }
                 }
 
-                // Convert to CPU samples immediately to free GPU memory
+                // Convert to CPU samples and write directly to file
                 if let audioData = audio {
-                    let samples = audioData.asArray(Float.self)
+                    autoreleasepool {
+                        let samples = audioData.asArray(Float.self)
 
-                    // Stream playback immediately as chunks are ready
-                    if useStreaming {
-                        audioPlayer.scheduleAudioChunk(samples, withCrossfade: true)
+                        // Stream playback immediately as chunks are ready
+                        if useStreaming {
+                            audioPlayer.scheduleAudioChunk(samples, withCrossfade: true)
+                        }
+
+                        // Write directly to file - no memory accumulation
+                        try? wavWriter.writeChunk(samples)
                     }
-
-                    // Also accumulate for saving to file
-                    audioSamples.append(contentsOf: samples)
                 }
                 audio = nil
 
                 // Clear GPU cache after each chunk
                 Memory.clearCache()
-                print("GPU memory after generation - Active: \(Double(Memory.activeMemory)/1e9) GB, Peak: \(Double(Memory.peakMemory)/1e9) GB")
-
             }
 
-            guard !audioSamples.isEmpty else {
+            // Finalize the WAV file
+            let finalURL = wavWriter.finalize()
+
+            guard wavWriter.framesWritten > 0 else {
                 throw NSError(
                     domain: "TTSViewModel",
                     code: 1,
@@ -295,22 +302,14 @@ class TTSViewModel {
                 )
             }
 
-            // Save audio directly from CPU samples (avoids GPU memory allocation)
-            generationProgress = "Saving audio..."
-
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("wav")
-
-            try saveAudioSamples(audioSamples, sampleRate: sampleRate, to: tempURL)
             Memory.clearCache()
 
-            audioURL = tempURL
+            audioURL = finalURL
             generationProgress = ""  // Clear progress
 
             // For single chunk, load normally for playback
             if !useStreaming {
-                audioPlayer.loadAudio(from: tempURL)
+                audioPlayer.loadAudio(from: finalURL)
             }
 
         } catch is CancellationError {
