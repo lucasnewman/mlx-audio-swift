@@ -10,6 +10,15 @@ struct Voice: Identifiable, Hashable {
     var isCustom: Bool
     var lastUsed: Date?
 
+    // Voice cloning properties
+    var audioFileURL: URL?
+    var transcription: String?
+
+    /// Whether this voice uses audio cloning (has both audio file and transcription)
+    var isClonedVoice: Bool {
+        audioFileURL != nil && transcription != nil && !transcription!.isEmpty
+    }
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -17,7 +26,9 @@ struct Voice: Identifiable, Hashable {
         language: String = "English",
         color: Color = .blue,
         isCustom: Bool = false,
-        lastUsed: Date? = nil
+        lastUsed: Date? = nil,
+        audioFileURL: URL? = nil,
+        transcription: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -26,6 +37,8 @@ struct Voice: Identifiable, Hashable {
         self.color = color
         self.isCustom = isCustom
         self.lastUsed = lastUsed
+        self.audioFileURL = audioFileURL
+        self.transcription = transcription
     }
 }
 
