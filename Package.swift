@@ -28,6 +28,10 @@ let package = Package(
             name: "MLXAudio",
             targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioSTS", "MLXAudioUI"]
         ),
+        .executable(
+            name: "mlx-audio-swift-tts",
+            targets: ["mlx-audio-swift-tts"],
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.3")),
@@ -42,6 +46,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
             path: "Sources/MLXAudioCore",
             swiftSettings: [
@@ -115,6 +120,12 @@ let package = Package(
                 "MLXAudioSTS",
             ],
             path: "Sources/MLXAudioUI"
+        ),
+        
+        .executableTarget(
+            name: "mlx-audio-swift-tts",
+            dependencies: ["MLXAudioCore", "MLXAudioTTS", "MLXAudioSTT"],
+            path: "Sources/mlx-audio-swift-tts"
         ),
 
         // MARK: - Tests
