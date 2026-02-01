@@ -1,13 +1,14 @@
+import AVFoundation
 import Foundation
 import HuggingFace
 import Hub
-import MLX
+@preconcurrency import MLX
 import MLXNN
 import MLXAudioCore
 import MLXAudioTTS
+import MLXLMCommon
 
 @main
-@MainActor
 enum App {
     static func main() async {
         do {
@@ -15,7 +16,8 @@ enum App {
             try await run(
                 model: args.model,
                 text: args.text,
-                voice: args.voice
+                voice: args.voice,
+                outputPath: args.outputPath
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -28,6 +30,7 @@ enum App {
         model: String,
         text: String,
         voice: String?,
+        outputPath: String?,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -38,36 +41,86 @@ enum App {
         let hfToken: String? = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"] ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
         
         guard let repoID = Repo.ID(rawValue: model) else {
-            throw NSError(domain: "MLXAudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(model)"])
+            throw AppError.invalidRepositoryID(model)
         }
         let modelType = try await ModelUtils.resolveModelType(repoID: repoID, hfToken: hfToken)
-        let modelURL = try await ModelUtils.resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors", hfToken: hfToken)
-        let configData = try Data(contentsOf: modelURL.appendingPathComponent("config.json"))
         
-        let loadedModel: Module
+        let loadedModel: SpeechGenerationModel
         
         switch modelType {
-        case "qwen_tts":
+        case "qwen3_tts":
             loadedModel = try await Qwen3Model.fromPretrained(model)
         default:
-            throw NSError(domain: "MLXAudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unsupported model type: \(String(describing: modelType))"])
+            throw AppError.unsupportedModelType(modelType)
         }
         
-        let player = AudioPlayerManager()
-
         print("Generating…")
         let started = CFAbsoluteTimeGetCurrent()
         
-        loadedModel
+        let audioData = try await loadedModel.generate(text: text, voice: voice, generationParameters: GenerateParameters()).asArray(Float.self)
         
-        // ...
+        let outputURL = makeOutputURL(outputPath: outputPath)
+        let sampleRate = Double(loadedModel.sampleRate)
+        try writeWavFile(samples: audioData, sampleRate: sampleRate, outputURL: outputURL)
+        print("Wrote WAV to \(outputURL.path)")
 
         print(String(format: "Finished generation in %0.2fs", CFAbsoluteTimeGetCurrent() - started))
         print("Memory usage:\n\(Memory.snapshot())")
-        player.stopStreaming()
 
         let elapsed = CFAbsoluteTimeGetCurrent() - started
         print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
+    private static func makeOutputURL(outputPath: String?) -> URL {
+        let outputName = outputPath?.isEmpty == false ? outputPath! : "output.wav"
+        if outputName.hasPrefix("/") {
+            return URL(fileURLWithPath: outputName)
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(outputName)
+    }
+
+    private static func writeWavFile(samples: [Float], sampleRate: Double, outputURL: URL) throws {
+        let frameCount = AVAudioFrameCount(samples.count)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            throw AppError.failedToCreateAudioBuffer
+        }
+        buffer.frameLength = frameCount
+        guard let channelData = buffer.floatChannelData else {
+            throw AppError.failedToAccessAudioBufferData
+        }
+        for i in 0..<samples.count {
+            channelData[0][i] = samples[i]
+        }
+        let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+        try audioFile.write(from: buffer)
+    }
+}
+
+// MARK: - App errors
+
+enum AppError: Error, LocalizedError, CustomStringConvertible {
+    case invalidRepositoryID(String)
+    case unsupportedModelType(String?)
+    case failedToCreateAudioBuffer
+    case failedToAccessAudioBufferData
+
+    var errorDescription: String? {
+        description
+    }
+
+    var description: String {
+        switch self {
+        case .invalidRepositoryID(let model):
+            return "Invalid repository ID: \(model)"
+        case .unsupportedModelType(let modelType):
+            return "Unsupported model type: \(String(describing: modelType))"
+        case .failedToCreateAudioBuffer:
+            return "Failed to create audio buffer"
+        case .failedToAccessAudioBufferData:
+            return "Failed to access audio buffer data"
+        }
     }
 }
 
@@ -89,10 +142,12 @@ struct CLI {
     let model: String
     let text: String
     let voice: String?
+    let outputPath: String?
 
     static func parse() throws -> CLI {
         var text: String?
         var voice: String? = nil
+        var outputPath: String? = nil
         var model = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
@@ -107,6 +162,9 @@ struct CLI {
             case "--model":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 model = v
+            case "--output", "-o":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                outputPath = v
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -123,19 +181,20 @@ struct CLI {
             throw CLIError.missingValue("--text")
         }
 
-        return CLI(model: model, text: finalText, voice: voice)
+        return CLI(model: model, text: finalText, voice: voice, outputPath: outputPath)
     }
 
     static func printUsage() {
         let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "marvis-tts-cli"
         print("""
         Usage:
-          \(exe) --text "Hello world" [--voice conversational_b] [--repo-id <hf-repo>]
+          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>]
 
         Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
           -v, --voice <name>            Voice id
-              --repo-id <repo>          HF repo id. Default: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit
+              --model <repo>            HF repo id. Default: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit
+          -o, --output <path>           Output WAV path. Default: ./output.wav
           -h, --help                    Show this help
         """)
     }
