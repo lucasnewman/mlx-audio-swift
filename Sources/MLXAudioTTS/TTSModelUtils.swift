@@ -43,11 +43,9 @@ public enum TTSModelUtils {
         }
 
         switch resolvedType {
-        case "qwen3_tts", "qwen3", "qwen":
-            // Detect Qwen3-TTS conditional generation model (nested talker_config)
-            if await configHasNestedTalkerConfig(modelRepo) {
-                return try await Qwen3TTSFullModel.fromPretrained(modelRepo)
-            }
+        case "qwen3_tts":
+            return try await Qwen3TTSModel.fromPretrained(modelRepo)
+        case "qwen3", "qwen":
             return try await Qwen3Model.fromPretrained(modelRepo)
         case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
             return try await LlamaTTSModel.fromPretrained(modelRepo)
@@ -85,8 +83,11 @@ public enum TTSModelUtils {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
-        if lower.contains("qwen") {
+        if lower.contains("qwen3_tts") {
             return "qwen3_tts"
+        }
+        if lower.contains("qwen3") || lower.contains("qwen") {
+            return "qwen3"
         }
         if lower.contains("soprano") {
             return "soprano"
