@@ -77,9 +77,35 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
         Task { @Sendable [weak self] in
             guard let self else { return }
             do {
-                let audio = try await self.generate(
-                    text: text, voice: voice, refAudio: refAudio, refText: refText,
-                    language: language, generationParameters: generationParameters
+                guard speechTokenizer != nil else {
+                    throw AudioGenerationError.modelNotInitialized("Speech tokenizer not loaded")
+                }
+                guard tokenizer != nil else {
+                    throw AudioGenerationError.modelNotInitialized("Text tokenizer not loaded")
+                }
+
+                // VoiceDesign: voice parameter is the instruct (voice description)
+                let instruct = voice
+                let lang = language ?? "auto"
+                let temp = generationParameters.temperature
+                let topP = generationParameters.topP
+                let repPenalty = generationParameters.repetitionPenalty ?? 1.05
+                let maxTokens = generationParameters.maxTokens ?? 4096
+
+                let audio = generateVoiceDesign(
+                    text: text,
+                    instruct: instruct,
+                    language: lang,
+                    temperature: temp,
+                    topP: topP,
+                    repetitionPenalty: repPenalty,
+                    maxTokens: maxTokens,
+                    onToken: { tokenId in
+                        continuation.yield(.token(tokenId))
+                    },
+                    onInfo: { info in
+                        continuation.yield(.info(info))
+                    }
                 )
                 continuation.yield(.audio(audio))
                 continuation.finish()
@@ -99,7 +125,9 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
-        maxTokens: Int
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
     ) -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
             return MLXArray.zeros([1])
@@ -116,7 +144,8 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
         let targetTokenCount = tokenizer.encode(text: text).count
         let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
 
-        // Initialize cache
+        // Initialize cache and timing
+        let startTime = Date()
         let cache = talker.makeCache()
         var generatedCodes = [MLXArray]()
         let eosTokenId = talkerConfig.codecEosTokenId
@@ -144,7 +173,9 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
             )
 
             // Check EOS
-            if Int(nextToken[0, 0].item(Int32.self)) == eosTokenId { break }
+            let tokenId = Int(nextToken[0, 0].item(Int32.self))
+            onToken?(tokenId)
+            if tokenId == eosTokenId { break }
 
             // Generate remaining codebook tokens with code predictor
             var codeTokens = [nextToken]
@@ -173,7 +204,7 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
             generatedCodes.append(allCodes)
 
             codeCache = nil
-            GPU.clearCache()
+            Memory.clearCache()
 
             // Prepare next input
             let textEmbed: MLXArray
@@ -194,13 +225,26 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
             eval(inputEmbeds)
 
             if step > 0 && step % 50 == 0 {
-                GPU.clearCache()
+                Memory.clearCache()
             }
         }
 
         guard !generatedCodes.isEmpty else {
             return MLXArray.zeros([1])
         }
+
+        // Emit generation info
+        let generateTime = Date().timeIntervalSince(startTime)
+        let tokenCount = generatedCodes.count
+        let info = AudioGenerationInfo(
+            promptTokenCount: 0,  // Not tracked for VoiceDesign
+            generationTokenCount: tokenCount,
+            prefillTime: 0,  // Included in generateTime
+            generateTime: generateTime,
+            tokensPerSecond: Double(tokenCount) / generateTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+        onInfo?(info)
 
         // Stack and decode
         let codes = stacked(generatedCodes, axis: 1)  // [1, seq_len, num_code_groups]
@@ -356,25 +400,38 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
             return argMax(logitsSlice, axis: -1, keepDims: true)
         }
 
-        // Apply top-p sampling
+        // Apply top-p (nucleus) sampling
+        // Implementation matches mlx_lm.sample_utils.apply_top_p
+        var filteredLogits = logitsSlice
         if topP > 0 && topP < 1.0 {
-            let scaledLogits = logitsSlice / temperature
-            let probs = softmax(scaledLogits, axis: -1)
-            let sortedIndices = argSort(probs, axis: -1)
-            // argSort returns ascending order, reverse for descending
-            let descIndices = sortedIndices[0..., .stride(by: -1)]
-            let descProbs = takeAlong(probs, descIndices, axis: -1)
-            let cumProbs = cumsum(descProbs, axis: -1)
-            let mask = cumProbs .> topP
-            let filteredProbs = which(mask, MLXArray(Float(0)), descProbs)
+            // Convert to probabilities
+            let probs = softmax(logitsSlice, axis: -1)
 
-            // Sample from filtered distribution
-            let token = categorical(log(filteredProbs + 1e-10))
-            return takeAlong(descIndices, token.reshaped(1, 1), axis: -1)
+            // Sort in ASCENDING order (like Python)
+            let sortedIndices = argSort(logitsSlice, axis: -1)
+            let sortedProbs = takeAlong(probs, sortedIndices, axis: -1)
+
+            // Cumulative probabilities
+            let cumProbs = cumsum(sortedProbs, axis: -1)
+
+            // Rearrange cumulative probs back to original order
+            // Create inverse index mapping using putAlong
+            let vocabSize = sortedIndices.dim(-1)
+            let arangeIndices = MLXArray(0..<vocabSize).reshaped(1, -1).asType(Int32.self)
+            let zeros = MLXArray.zeros(sortedIndices.shape, type: Int32.self)
+            let inverseIndices = putAlong(zeros, sortedIndices, values: arangeIndices, axis: -1)
+            let cumProbsOrigOrder = takeAlong(cumProbs, inverseIndices, axis: -1)
+
+            // Mask tokens where cumulative prob > (1 - top_p)
+            // Keep tokens that are in the top_p nucleus
+            let threshold = 1.0 - topP
+            let mask = cumProbsOrigOrder .> threshold
+            let negInf = MLXArray.full(logitsSlice.shape, values: MLXArray(-Float.infinity), dtype: logitsSlice.dtype)
+            filteredLogits = which(mask, logitsSlice, negInf)
         }
 
-        // Simple temperature sampling
-        let token = categorical(logitsSlice / temperature)
+        // Sample with temperature
+        let token = categorical(filteredLogits / temperature)
         return token.reshaped(1, 1)
     }
 
