@@ -256,9 +256,7 @@ struct SettingsView: View {
             // Reset button
             Button(action: {
                 viewModel.modelId = "mlx-community/VyvoTTS-EN-Beta-4bit"
-                viewModel.maxTokens = 1200
-                viewModel.temperature = 0.6
-                viewModel.topP = 0.8
+                viewModel.resetGenerationParameterOverrides()
                 viewModel.enableChunking = true
                 viewModel.maxChunkLength = 200
                 viewModel.splitPattern = "\n"
