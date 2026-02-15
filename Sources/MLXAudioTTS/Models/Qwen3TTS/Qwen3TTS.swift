@@ -356,11 +356,17 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Reference text and target text tokenization
         let refChatText = "<|im_start|>assistant\n\(refText)<|im_end|>\n"
         let refIds = MLXArray(tokenizer.encode(text: refChatText).map { Int32($0) }).reshaped(1, -1)
-        let refTextIds = refIds[0..., 3 ..< (refIds.dim(1) - 2), 0...]
+        let refCount = refIds.dim(1)
+        let refStart = min(3, refCount)
+        let refEnd = max(refStart, refCount - 2)
+        let refTextIds = refIds[0..., refStart ..< refEnd]
 
         let targetChatText = "<|im_start|>assistant\n\(text)<|im_end|>\n<|im_start|>assistant\n"
         let targetIds = MLXArray(tokenizer.encode(text: targetChatText).map { Int32($0) }).reshaped(1, -1)
-        let targetTextIds = targetIds[0..., 3 ..< (targetIds.dim(1) - 5), 0...]
+        let targetCount = targetIds.dim(1)
+        let targetStart = min(3, targetCount)
+        let targetEnd = max(targetStart, targetCount - 5)
+        let targetTextIds = targetIds[0..., targetStart ..< targetEnd]
 
         // Encode reference audio to codec codes
         let refCodes = speechTokenizer.encode(refAudioForEncoder) // [1, num_code_groups, ref_time]
@@ -381,13 +387,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let textLen = textEmbed.dim(1)
 
         // Build codec embeddings from reference codes: codec_bos + sum of all codebook embeddings
-        let firstCbCodes = refCodes[0..., 0 ..< 1, 0...]
+        let firstCbCodes = refCodes[0..., 0, 0...]
         var refCodecEmbed = talker.getInputEmbeddings()(firstCbCodes)
         if talkerConfig.numCodeGroups > 1 {
             for i in 0 ..< (talkerConfig.numCodeGroups - 1) {
                 let codeIdx = i + 1
                 if codeIdx >= refCodes.dim(1) { break }
-                let cbCodes = refCodes[0..., codeIdx ..< (codeIdx + 1), 0...]
+                let cbCodes = refCodes[0..., codeIdx, 0...]
                 refCodecEmbed = refCodecEmbed + talker.codePredictor.codecEmbedding[i](cbCodes)
             }
         }
@@ -417,7 +423,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             languageId = langMap[language.lowercased()]
         }
 
-        var codecPrefill: [Int32] = if let langId = languageId {
+        let codecPrefill: [Int32] = if let langId = languageId {
             [
                 Int32(talkerConfig.codecThinkId),
                 Int32(talkerConfig.codecThinkBosId),
@@ -534,7 +540,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         // Build codec prefix
-        var codecPrefill: [Int32] = if let langId = languageId {
+        let codecPrefill: [Int32] = if let langId = languageId {
             [
                 Int32(talkerConfig.codecThinkId),
                 Int32(talkerConfig.codecThinkBosId),
@@ -834,7 +840,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         if !tokenizerWeights.isEmpty {
             let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: tokenizerWeights)
             let pairs = sanitized.map { ($0.key, $0.value) }
-            try speechTokenizer.update(parameters: ModuleParameters.unflattened(pairs), verify: .shapeMismatch)
+            try speechTokenizer.update(parameters: ModuleParameters.unflattened(pairs), verify: .all)
             eval(speechTokenizer.parameters())
         }
 

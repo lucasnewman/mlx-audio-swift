@@ -14,7 +14,7 @@ private func reflectPad1D(_ x: MLXArray, pad: Int) -> MLXArray {
     leftPieces.reserveCapacity(clampedPad)
     if clampedPad > 0 {
         for i in stride(from: clampedPad, through: 1, by: -1) {
-            leftPieces.append(x[.ellipsis, i ..< (i + 1), .ellipsis])
+            leftPieces.append(x[0..., i ..< (i + 1), 0...])
         }
     }
 
@@ -25,7 +25,7 @@ private func reflectPad1D(_ x: MLXArray, pad: Int) -> MLXArray {
         let rightFrom = timeLength - 2
         let rightTo = Swift.max(rightStart, 0)
         for i in stride(from: rightFrom, through: rightTo, by: -1) {
-            rightPieces.append(x[.ellipsis, i ..< (i + 1), .ellipsis])
+            rightPieces.append(x[0..., i ..< (i + 1), 0...])
         }
     }
 
@@ -320,8 +320,12 @@ final class Qwen3TTSSpeakerEncoder: Module {
 
         var hiddenStates: [MLXArray] = []
         for block in blocks {
-            if let layer = block as? UnaryLayer {
+            if let layer = block as? TimeDelayNetBlock {
                 states = layer(states)
+            } else if let layer = block as? SqueezeExcitationRes2NetBlock {
+                states = layer(states)
+            } else {
+                fatalError("Unsupported speaker encoder block type: \(type(of: block))")
             }
             hiddenStates.append(states)
         }

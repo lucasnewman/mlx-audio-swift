@@ -6,34 +6,14 @@ import MLXNN
 
 // MARK: - Vector Quantization
 
-final class EuclideanCodebook: Module {
-    let dim: Int
-    let codebookSize: Int
-    @ModuleInfo var embed: Embedding
-    @ModuleInfo var initialized: MLXArray
-    @ModuleInfo(key: "embedding_sum") var embeddingSum: MLXArray
-    @ModuleInfo(key: "cluster_usage") var clusterUsage: MLXArray
-
-    init(dim: Int, codebookSize: Int) {
-        self.dim = dim
-        self.codebookSize = codebookSize
-        _embed.wrappedValue = Embedding(embeddingCount: codebookSize, dimensions: dim)
-        _initialized.wrappedValue = MLXArray.zeros([1], dtype: .float32)
-        _embeddingSum.wrappedValue = MLXArray.zeros([codebookSize, dim], dtype: .float32)
-        _clusterUsage.wrappedValue = MLXArray.zeros([codebookSize], dtype: .float32)
-    }
-
-    func decode(_ codes: MLXArray) -> MLXArray {
-        embed(codes)
-    }
-}
-
 final class VectorQuantization: Module {
     @ModuleInfo(key: "project_out") var projectOut: Linear?
     @ModuleInfo var codebook: EuclideanCodebook
+    let codebookDim: Int
 
     init(dim: Int, codebookSize: Int, codebookDim: Int? = nil) {
         let cbDim = codebookDim ?? dim
+        self.codebookDim = cbDim
         if cbDim != dim {
             _projectOut.wrappedValue = Linear(cbDim, dim)
         } else {
@@ -62,7 +42,7 @@ final class ResidualVectorQuantization: Module {
 
     func decode(_ codes: MLXArray) -> MLXArray {
         // codes: [num_quantizers, batch, time]
-        var quantized = MLXArray.zeros([codes.dim(1), layers[0].codebook.dim, codes.dim(2)])
+        var quantized = MLXArray.zeros([codes.dim(1), layers[0].codebookDim, codes.dim(2)])
         for (idx, layer) in layers.enumerated() {
             quantized = quantized + layer.decode(codes[idx])
         }
@@ -925,35 +905,6 @@ final class Qwen3TTSSpeechTokenizer: Module {
             return key
         }
 
-        func mapEncoderCodebookEmbed(_ rest: String) -> String? {
-            let strippedWeight = rest.replacingOccurrences(of: "codebook.embed.weight", with: "codebook.embed")
-            guard strippedWeight.contains(".codebook.embed") else { return nil }
-
-            let isSemantic = strippedWeight.contains("semantic_residual_vector_quantizer")
-            let isAcoustic = strippedWeight.contains("acoustic_residual_vector_quantizer")
-            var renamed = strippedWeight
-
-            let prefix: String
-            if isSemantic {
-                renamed = renamed.replacingOccurrences(of: "semantic_residual_vector_quantizer.", with: "")
-                prefix = "encoder_model.quantizer.rvq_first.vq"
-            } else if isAcoustic {
-                renamed = renamed.replacingOccurrences(of: "acoustic_residual_vector_quantizer.", with: "")
-                prefix = "encoder_model.quantizer.rvq_rest.vq"
-            } else if renamed.hasPrefix("rvq_first.") {
-                renamed = String(renamed.dropFirst("rvq_first.".count))
-                prefix = "encoder_model.quantizer.rvq_first.vq"
-            } else if renamed.hasPrefix("rvq_rest.") {
-                renamed = String(renamed.dropFirst("rvq_rest.".count))
-                prefix = "encoder_model.quantizer.rvq_rest.vq"
-            } else {
-                prefix = "encoder_model.quantizer.rvq_rest.vq"
-            }
-
-            let mapped = renamed.replacingOccurrences(of: ".codebook.embed", with: ".codebook.embed.weight")
-            return "\(prefix).\(mapped)"
-        }
-
         func mapEncoderQuantizerLayers(_ rest: String) -> String? {
             if rest.contains("codebook.") { return nil }
             if rest.hasPrefix("layers.") || rest.contains(".layers.") {
@@ -1135,8 +1086,11 @@ final class Qwen3TTSSpeechTokenizer: Module {
                 if k.hasPrefix("encoder.quantizer.") {
                     let rest = k.replacingOccurrences(of: "encoder.quantizer.", with: "")
 
-                    if let mappedCodebookEmbed = mapEncoderCodebookEmbed(rest) {
-                        sanitized[mappedCodebookEmbed] = v
+                    let isExplicitEmbedTensor =
+                        rest.contains(".codebook.embed.weight")
+                        || rest.hasSuffix(".codebook.embed")
+                        || rest.hasSuffix("codebook.embed")
+                    if isExplicitEmbedTensor {
                         continue
                     }
 
@@ -1227,18 +1181,18 @@ final class Qwen3TTSSpeechTokenizer: Module {
             }
             let groupPrefix = encoderCodebookPrefix(from: basePath)
             let prefix = "\(groupPrefix).vq.layers.\(layerIdx).codebook"
+            sanitized["\(prefix).initialized"] = MLXArray.zeros([1], dtype: .float32)
             sanitized["\(prefix).cluster_usage"] = clusterUsage
             sanitized["\(prefix).embedding_sum"] = embeddingSum
-            sanitized["\(prefix).embed.weight"] = embeddingSum / clip(clusterUsage[0..., .newAxis], min: 1e-5)
         }
 
-        // Compute embeddings from cluster_usage and embedding_sum
-        let eps: Float = 1e-5
+        // Keep decoder codebook statistics to derive embeddings via updateInPlace().
         for (basePath, data) in codebookData {
             guard let clusterUsage = data["cluster_usage"],
                   let embeddingSum = data["embedding_sum"] else { continue }
-            let embedding = embeddingSum / clip(clusterUsage[0..., .newAxis], min: eps)
-            sanitized["\(basePath).codebook.embed.weight"] = embedding
+            sanitized["\(basePath).codebook.initialized"] = MLXArray.zeros([1], dtype: .float32)
+            sanitized["\(basePath).codebook.cluster_usage"] = clusterUsage
+            sanitized["\(basePath).codebook.embedding_sum"] = embeddingSum
         }
 
         return sanitized
