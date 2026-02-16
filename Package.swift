@@ -125,6 +125,7 @@ let package = Package(
             name: "MLXAudioSTS",
             dependencies: [
                 "MLXAudioCore",
+                "MLXAudioCodecs",
                 "MLXAudioTTS",
                 "MLXAudioSTT",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -132,6 +133,7 @@ let package = Package(
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Transformers", package: "swift-transformers"),
             ],
             path: "Sources/MLXAudioSTS"
         ),
