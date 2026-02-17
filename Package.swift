@@ -92,14 +92,7 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioTTS",
-            exclude: [
-                "Models/Llama/README.md",
-                "Models/Marvis/README.md",
-                "Models/PocketTTS/README.md",
-                "Models/Qwen3/README.md",
-                "Models/Soprano/README.md",
-            ]
+            path: "Sources/MLXAudioTTS"
         ),
 
         // MARK: - MLXAudioSTT
@@ -115,10 +108,7 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioSTT",
-            exclude: [
-                "Models/GLMASR/README.md",
-            ]
+            path: "Sources/MLXAudioSTT"
         ),
 
         // MARK: - MLXAudioVAD
@@ -131,10 +121,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "Sources/MLXAudioVAD",
-            exclude: [
-                "Models/Sortformer/README.md",
-            ]
+            path: "Sources/MLXAudioVAD"
         ),
 
         // MARK: - MLXAudioSTS
@@ -152,10 +139,7 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioSTS",
-            exclude: [
-                "Models/SAMAudio/README.md",
-            ]
+            path: "Sources/MLXAudioSTS"
         ),
 
         // MARK: - MLXAudioUI
