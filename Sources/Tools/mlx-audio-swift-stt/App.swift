@@ -69,7 +69,7 @@ private struct Options {
     var outputPath: String?
     var format: OutputFormat = .txt
     var verbose = false
-    var maxTokens = 128
+    var maxTokens = 2048
     var language = "en"
     var chunkDuration: Float = 30.0
     var frameThreshold = 25
@@ -220,7 +220,7 @@ private struct Options {
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
               --verbose                     Verbose logging
-              --max-tokens <int>            Max generated tokens. Default: 128
+              --max-tokens <int>            Max generated tokens. Default: 2048
               --language <code|name>        Language hint. Default: en
               --chunk-duration <float>      Chunk duration seconds. Default: 30.0
               --frame-threshold <int>       Accepted for compatibility (currently unused). Default: 25
