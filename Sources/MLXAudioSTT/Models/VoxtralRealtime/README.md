@@ -1,6 +1,12 @@
-# Voxtral Realtime STT
+# Voxtral Mini 4B Realtime
 
-Voxtral Realtime speech-to-text support for `MLXAudioSTT`.
+Voxtral Mini 4B Realtime 2602 is a multilingual, realtime speech-transcription model. It supports 13 languages and outperforms existing open-source baselines across a range of tasks, making it ideal for applications like voice assistants and live subtitling.
+
+## Supported Models
+
+[mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16)
+[mlx-community/Voxtral-Mini-4B-Realtime-2602-6bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-6bit)
+[mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit)
 
 ## Swift Example
 
@@ -10,7 +16,7 @@ import MLXAudioSTT
 
 let (_, audio) = try loadAudioArray(from: audioURL)
 
-let model = try await VoxtralRealtimeModel.fromPretrained("mlx-community/Voxtral-Mini-4B-Realtime-2602")
+let model = try await VoxtralRealtimeModel.fromPretrained("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
 let output = model.generate(audio: audio)
 print(output.text)
 ```
