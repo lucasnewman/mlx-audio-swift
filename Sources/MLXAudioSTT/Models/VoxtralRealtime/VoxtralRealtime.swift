@@ -424,10 +424,7 @@ public extension VoxtralRealtimeModel {
         return model
     }
 
-    static func fromPretrained(
-        _ modelPath: String,
-        cache: HubCache = .default
-    ) async throws -> VoxtralRealtimeModel {
+    static func fromPretrained(_ modelPath: String) async throws -> VoxtralRealtimeModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -442,8 +439,7 @@ public extension VoxtralRealtimeModel {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken,
-            cache: cache
+            hfToken: hfToken
         )
 
         return try fromDirectory(modelDir)
