@@ -126,7 +126,7 @@ class TTSViewModel {
 
         do {
             defaultGenerationParameters = model?.defaultGenerationParameters ?? defaultGenerationParameters
-            model = try await TTSModelUtils.loadModel(modelRepo: modelId)
+            model = try await TTS.loadModel(modelRepo: modelId)
             loadedModelId = modelId
             generationProgress = "" // Clear progress on success
         } catch {

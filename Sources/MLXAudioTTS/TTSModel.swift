@@ -2,7 +2,7 @@ import Foundation
 import HuggingFace
 import MLXAudioCore
 
-public enum TTSModelUtilsError: Error, LocalizedError, CustomStringConvertible {
+public enum TTSModelError: Error, LocalizedError, CustomStringConvertible {
     case invalidRepositoryID(String)
     case unsupportedModelType(String?)
 
@@ -20,14 +20,14 @@ public enum TTSModelUtilsError: Error, LocalizedError, CustomStringConvertible {
     }
 }
 
-public enum TTSModelUtils {
+public enum TTS {
     public static func loadModel(
         modelRepo: String,
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> SpeechGenerationModel {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
-            throw TTSModelUtilsError.invalidRepositoryID(modelRepo)
+            throw TTSModelError.invalidRepositoryID(modelRepo)
         }
 
         let modelType = try await ModelUtils.resolveModelType(
@@ -45,7 +45,7 @@ public enum TTSModelUtils {
     ) async throws -> SpeechGenerationModel {
         let resolvedType = normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
         guard let resolvedType else {
-            throw TTSModelUtilsError.unsupportedModelType(modelType)
+            throw TTSModelError.unsupportedModelType(modelType)
         }
 
         switch resolvedType {
@@ -62,7 +62,7 @@ public enum TTSModelUtils {
         case "pocket_tts":
             return try await PocketTTSModel.fromPretrained(modelRepo, cache: cache)
         default:
-            throw TTSModelUtilsError.unsupportedModelType(modelType ?? resolvedType)
+            throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
     }
 
@@ -96,3 +96,9 @@ public enum TTSModelUtils {
         return nil
     }
 }
+
+@available(*, deprecated, renamed: "TTSModelError")
+public typealias TTSModelUtilsError = TTSModelError
+
+@available(*, deprecated, renamed: "TTS")
+public typealias TTSModelUtils = TTS

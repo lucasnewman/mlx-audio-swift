@@ -40,7 +40,7 @@ final class SpeechController {
         Task {
             do {
                 print("Loading TTS model: \(ttsRepoId)")
-                self.model = try await TTSModelUtils.loadModel(modelRepo: ttsRepoId)
+                self.model = try await TTS.loadModel(modelRepo: ttsRepoId)
                 print("Loaded TTS model.")
             } catch {
                 print("Error loading model: \(error)")
