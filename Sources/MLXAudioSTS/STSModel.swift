@@ -52,18 +52,24 @@ public enum STS {
     public static func loadModel(
         modelRepo: String,
         hfToken: String? = nil,
-        strict: Bool = false
+        strict: Bool = false,
+        cache: HubCache = .default
     ) async throws -> LoadedSTSModel {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw STSModelError.invalidRepositoryID(modelRepo)
         }
 
-        let modelType = try await ModelUtils.resolveModelType(repoID: repoID, hfToken: hfToken)
+        let modelType = try await ModelUtils.resolveModelType(
+            repoID: repoID,
+            hfToken: hfToken,
+            cache: cache
+        )
         return try await loadModel(
             modelRepo: modelRepo,
             modelType: modelType,
             hfToken: hfToken,
-            strict: strict
+            strict: strict,
+            cache: cache
         )
     }
 
@@ -71,7 +77,8 @@ public enum STS {
         modelRepo: String,
         modelType: String?,
         hfToken: String? = nil,
-        strict: Bool = false
+        strict: Bool = false,
+        cache: HubCache = .default
     ) async throws -> LoadedSTSModel {
         let resolved = normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
         guard let resolved else {
@@ -80,15 +87,20 @@ public enum STS {
 
         switch resolved {
         case "lfm_audio", "lfm", "lfm2", "lfm2_audio":
-            let model = try await LFM2AudioModel.fromPretrained(modelRepo)
+            let model = try await LFM2AudioModel.fromPretrained(modelRepo, cache: cache)
             return .lfmAudio(model)
 
         case "sam_audio", "sam", "samaudio":
-            let model = try await SAMAudio.fromPretrained(modelRepo, hfToken: hfToken, strict: strict)
+            let model = try await SAMAudio.fromPretrained(
+                modelRepo,
+                hfToken: hfToken,
+                strict: strict,
+                cache: cache
+            )
             return .samAudio(model)
 
         case "mossformer2_se", "mossformer2", "mossformer":
-            let model = try await MossFormer2SEModel.fromPretrained(modelRepo)
+            let model = try await MossFormer2SEModel.fromPretrained(modelRepo, cache: cache)
             return .mossFormer2SE(model)
 
         default:
