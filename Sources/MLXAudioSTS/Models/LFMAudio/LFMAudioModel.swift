@@ -717,13 +717,17 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
 
     // MARK: - From Pretrained
 
-    public static func fromPretrained(_ modelNameOrPath: String) async throws -> LFM2AudioModel {
+    public static func fromPretrained(
+        _ modelNameOrPath: String,
+        cache: HubCache = .default
+    ) async throws -> LFM2AudioModel {
         guard let repoID = Repo.ID(rawValue: modelNameOrPath) else {
             throw LFMAudioError.modelNotFound(modelNameOrPath)
         }
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
-            requiredExtension: "safetensors"
+            requiredExtension: "safetensors",
+            cache: cache
         )
 
         let configURL = modelDir.appendingPathComponent("config.json")
