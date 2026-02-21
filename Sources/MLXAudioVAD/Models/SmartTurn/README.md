@@ -26,4 +26,4 @@ print(result.probability)  // sigmoid probability
 
 ## License
 
-This code is licensed under the BSD 2-Clause "Simplified" License. See `LICENSE` for more information.
+This code is licensed under the BSD 2-Clause "Simplified" License. See the [LICENSE](https://github.com/pipecat-ai/smart-turn/blob/main/LICENSE) for more information.
