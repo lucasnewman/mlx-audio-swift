@@ -5,7 +5,7 @@ import MLXAudioVAD
 import os
 import Speech
 
-actor SimpleVAD {
+actor SemanticVAD {
     enum Event: Sendable {
         case started
         case stopped(transcription: String?)
@@ -291,11 +291,10 @@ actor SimpleVAD {
         let sourceRate = utteranceSampleRate ?? 16000
 
         do {
-            let resampledSamples: [Float]
-            if sourceRate == 16000 {
-                resampledSamples = utteranceSamples
+            let resampledSamples: [Float] = if sourceRate == 16000 {
+                utteranceSamples
             } else {
-                resampledSamples = try resampleAudio(utteranceSamples, from: sourceRate, to: 16000)
+                try resampleAudio(utteranceSamples, from: sourceRate, to: 16000)
             }
 
             guard !resampledSamples.isEmpty else { return false }
@@ -495,7 +494,7 @@ private extension AVAudioPCMBuffer {
 
     func rmsLevel() -> Float {
         guard format.commonFormat == .pcmFormatFloat32 else {
-            assertionFailure("SimpleVAD only supports .pcmFormatFloat32.")
+            assertionFailure("SemanticVAD only supports .pcmFormatFloat32.")
             return 0
         }
 

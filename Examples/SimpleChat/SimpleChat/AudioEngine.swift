@@ -1,6 +1,6 @@
 @preconcurrency import AVFoundation
-import os
 import MLXAudioCore
+import os
 
 struct AudioChunk: Sendable {
     let samples: [Float]
@@ -71,12 +71,12 @@ final class AudioEngine {
 
         let input = engine.inputNode
 #if os(iOS)
-       try input.setVoiceProcessingEnabled(true)
+        try input.setVoiceProcessingEnabled(true)
 #endif
 
         let output = engine.outputNode
 #if os(iOS)
-       try output.setVoiceProcessingEnabled(true)
+        try output.setVoiceProcessingEnabled(true)
 #endif
 
         engine.connect(streamingPlayer, to: output, format: nil)
@@ -229,7 +229,7 @@ private final class BooleanGate: @unchecked Sendable {
     private let lock: OSAllocatedUnfairLock<Bool>
 
     init(initialValue: Bool) {
-        lock = OSAllocatedUnfairLock(initialState: initialValue)
+        self.lock = OSAllocatedUnfairLock(initialState: initialValue)
     }
 
     func get() -> Bool {
