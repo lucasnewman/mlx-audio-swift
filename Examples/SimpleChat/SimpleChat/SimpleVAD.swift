@@ -1,4 +1,7 @@
 @preconcurrency import AVFoundation
+import MLX
+import MLXAudioCore
+import MLXAudioVAD
 import os
 import Speech
 
@@ -22,16 +25,30 @@ actor SimpleVAD {
     private var analysisFormat: AVAudioFormat?
     private var analyzerConverter: AVAudioConverter?
     private var transcriberTask: Task<Void, Never>?
+    private var smartTurnLoadTask: Task<Void, Never>?
     private var lifecycleState: LifecycleState = .idle
     private var isListening = false
     private var lastSpeechTime: TimeInterval?
+    private var hasRunSmartTurnEndpointCheck = false
+    private var utteranceSamples: [Float] = []
+    private var utteranceSampleRate: Int?
     private let detectionRMSThreshold: Float
+    private let smartTurnRepoID: String
+    private let smartTurnThreshold: Float?
+    private var smartTurnModel: SmartTurnModel?
 
     private let transcriptState = TranscriptState()
 
-    init(hangTime: TimeInterval = 2.0, detectionRMSThreshold: Float = 0.02) {
+    init(
+        hangTime: TimeInterval = 2.0,
+        detectionRMSThreshold: Float = 0.02,
+        smartTurnRepoID: String = "mlx-community/smart-turn-v3",
+        smartTurnThreshold: Float? = nil
+    ) {
         self.hangTime = hangTime
         self.detectionRMSThreshold = detectionRMSThreshold
+        self.smartTurnRepoID = smartTurnRepoID
+        self.smartTurnThreshold = smartTurnThreshold
 
         Task {
             await setupSpeechPipeline()
@@ -41,6 +58,7 @@ actor SimpleVAD {
     deinit {
         analyzerInputContinuation?.finish()
         transcriberTask?.cancel()
+        smartTurnLoadTask?.cancel()
     }
 
     func process(chunk: AudioChunk) async -> Event? {
@@ -52,6 +70,9 @@ actor SimpleVAD {
     func reset() async {
         isListening = false
         lastSpeechTime = nil
+        hasRunSmartTurnEndpointCheck = false
+        utteranceSamples.removeAll(keepingCapacity: true)
+        utteranceSampleRate = nil
         await transcriptState.reset()
     }
 
@@ -118,6 +139,8 @@ actor SimpleVAD {
                 print("Error: Transcriber results failed: \(error)")
             }
         }
+
+        startSmartTurnLoadIfNeeded()
     }
 
     private func clearAnalyzerContinuation() {
@@ -130,6 +153,31 @@ actor SimpleVAD {
         }
     }
 
+    private func startSmartTurnLoadIfNeeded() {
+        guard smartTurnModel == nil, smartTurnLoadTask == nil else { return }
+
+        let repoID = smartTurnRepoID
+        smartTurnLoadTask = Task {
+            do {
+                let model = try await SmartTurnModel.fromPretrained(repoID)
+                self.installSmartTurnModel(model)
+            } catch {
+                self.handleSmartTurnLoadFailure(error)
+            }
+        }
+    }
+
+    private func installSmartTurnModel(_ model: SmartTurnModel) {
+        smartTurnModel = model
+        smartTurnLoadTask = nil
+        print("Loaded SmartTurn endpoint model from \(smartTurnRepoID).")
+    }
+
+    private func handleSmartTurnLoadFailure(_ error: Error) {
+        smartTurnLoadTask = nil
+        print("Warning: Failed to load SmartTurn endpoint model (\(smartTurnRepoID)): \(error)")
+    }
+
     private func processBuffer(_ buffer: AVAudioPCMBuffer) async -> Event? {
         enqueueForSpeechTranscription(buffer)
 
@@ -139,26 +187,130 @@ actor SimpleVAD {
         if isSpeechFrame {
             if !isListening {
                 isListening = true
+                hasRunSmartTurnEndpointCheck = false
+                utteranceSamples.removeAll(keepingCapacity: true)
+                utteranceSampleRate = nil
                 await transcriptState.beginUtterance()
                 print("Did start listening (RMS VAD).")
                 lastSpeechTime = now
+                appendUtteranceSamples(from: buffer)
                 return .started
             }
+            appendUtteranceSamples(from: buffer)
             lastSpeechTime = now
             return nil
         }
 
         guard isListening, let lastSpeechTime else { return nil }
+        appendUtteranceSamples(from: buffer)
+        let finalizedTranscript = await transcriptState.currentFinalizedTranscript()
+
+        if !hasRunSmartTurnEndpointCheck, finalizedTranscript != nil {
+            hasRunSmartTurnEndpointCheck = true
+            if smartTurnDetectedEndpoint() {
+                let transcription = await consumeUtteranceTranscription()
+                print("SmartTurn detected endpoint, short-circuiting hang time after \(now - lastSpeechTime) seconds.")
+                return .stopped(transcription: transcription)
+            }
+        }
 
         let idleDuration = now - lastSpeechTime
         guard idleDuration > hangTime else { return nil }
 
-        isListening = false
-        self.lastSpeechTime = nil
-
-        let transcription = await transcriptState.consumeTranscript()
+        let transcription = await consumeUtteranceTranscription()
         print("Did stop listening after \(idleDuration)s below RMS threshold.")
         return .stopped(transcription: transcription)
+    }
+
+    private func consumeUtteranceTranscription() async -> String? {
+        isListening = false
+        lastSpeechTime = nil
+        hasRunSmartTurnEndpointCheck = false
+        utteranceSamples.removeAll(keepingCapacity: true)
+        utteranceSampleRate = nil
+        return await transcriptState.consumeTranscript()
+    }
+
+    private func appendUtteranceSamples(from buffer: AVAudioPCMBuffer) {
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameLength > 0, channelCount > 0 else { return }
+        guard let channelData = buffer.floatChannelData else { return }
+        let sampleRate = Int(buffer.format.sampleRate.rounded())
+        guard sampleRate > 0 else { return }
+
+        let monoSamples: [Float]
+        if channelCount == 1 {
+            monoSamples = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+        } else if buffer.format.isInterleaved {
+            let interleaved = UnsafeBufferPointer(start: channelData[0], count: frameLength * channelCount)
+            var downmixed = [Float](repeating: 0, count: frameLength)
+            let gain = 1.0 / Float(channelCount)
+            for frameIdx in 0 ..< frameLength {
+                var sum: Float = 0
+                let base = frameIdx * channelCount
+                for channel in 0 ..< channelCount {
+                    sum += interleaved[base + channel]
+                }
+                downmixed[frameIdx] = sum * gain
+            }
+            monoSamples = downmixed
+        } else {
+            var downmixed = [Float](repeating: 0, count: frameLength)
+            let gain = 1.0 / Float(channelCount)
+            for channel in 0 ..< channelCount {
+                let channelPtr = UnsafeBufferPointer(start: channelData[channel], count: frameLength)
+                for frameIdx in 0 ..< frameLength {
+                    downmixed[frameIdx] += channelPtr[frameIdx] * gain
+                }
+            }
+            monoSamples = downmixed
+        }
+
+        guard !monoSamples.isEmpty else { return }
+        if let utteranceSampleRate {
+            if utteranceSampleRate == sampleRate {
+                utteranceSamples.append(contentsOf: monoSamples)
+            } else {
+                do {
+                    let resampled = try resampleAudio(monoSamples, from: sampleRate, to: utteranceSampleRate)
+                    utteranceSamples.append(contentsOf: resampled)
+                } catch {
+                    print("Warning: Failed to resample utterance chunk from \(sampleRate)Hz to \(utteranceSampleRate)Hz: \(error)")
+                }
+            }
+        } else {
+            utteranceSampleRate = sampleRate
+            utteranceSamples.append(contentsOf: monoSamples)
+        }
+    }
+
+    private func smartTurnDetectedEndpoint() -> Bool {
+        guard let smartTurnModel else { return false }
+        guard !utteranceSamples.isEmpty else { return false }
+        let sourceRate = utteranceSampleRate ?? 16000
+
+        do {
+            let resampledSamples: [Float]
+            if sourceRate == 16000 {
+                resampledSamples = utteranceSamples
+            } else {
+                resampledSamples = try resampleAudio(utteranceSamples, from: sourceRate, to: 16000)
+            }
+
+            guard !resampledSamples.isEmpty else { return false }
+            let audio = MLXArray(resampledSamples)
+            let endpoint = try smartTurnModel.predictEndpoint(
+                audio,
+                sampleRate: 16000,
+                threshold: smartTurnThreshold
+            )
+            print("SmartTurn endpoint prediction=\(endpoint.prediction) probability=\(endpoint.probability)")
+            return endpoint.prediction == 1
+        } catch {
+            print("Warning: SmartTurn endpoint detection failed: \(error)")
+            return false
+        }
     }
 
     private func enqueueForSpeechTranscription(_ buffer: AVAudioPCMBuffer) {
@@ -250,19 +402,28 @@ private actor TranscriptState {
     }
 
     func consumeTranscript() -> String? {
-        let finalized = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hypothesis = latestHypothesis?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transcription: String? = if !finalized.isEmpty {
-            finalized
-        } else if let hypothesis, !hypothesis.isEmpty {
-            hypothesis
-        } else {
-            nil
-        }
+        let transcription = currentTranscript()
 
         finalizedTranscript = ""
         latestHypothesis = nil
         return transcription
+    }
+
+    func currentTranscript() -> String? {
+        let finalized = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hypothesis = latestHypothesis?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalized.isEmpty {
+            return finalized
+        }
+        if let hypothesis, !hypothesis.isEmpty {
+            return hypothesis
+        }
+        return nil
+    }
+
+    func currentFinalizedTranscript() -> String? {
+        let finalized = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        return finalized.isEmpty ? nil : finalized
     }
 
     private func mergeFinalizedText(_ text: String) {
