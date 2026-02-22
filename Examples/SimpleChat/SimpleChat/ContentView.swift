@@ -5,8 +5,8 @@ import SwiftUI
 import UIKit
 #endif
 
-@Observable
 @MainActor
+@Observable
 class ContentViewModel {
     var speechController = SpeechController()
     
@@ -42,6 +42,7 @@ class ContentViewModel {
     }
 }
 
+@MainActor
 extension ContentViewModel: SpeechControllerDelegate {
     func speechController(_ controller: SpeechController, didFinish transcription: String) {
         Task { @MainActor in
@@ -55,6 +56,7 @@ extension ContentViewModel: SpeechControllerDelegate {
     }
 }
 
+@MainActor
 struct ContentView: View {
     @State private var permissionStatus: AVAudioApplication.recordPermission = .undetermined
     @State private var viewModel = ContentViewModel()

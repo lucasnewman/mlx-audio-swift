@@ -2,14 +2,12 @@
 import os
 import Speech
 
-@MainActor
-protocol SimpleVADDelegate: AnyObject {
-    func didStartSpeaking()
-    func didStopSpeaking(transcription: String?)
-}
+actor SimpleVAD {
+    enum Event: Sendable {
+        case started
+        case stopped(transcription: String?)
+    }
 
-@MainActor
-final class SimpleVAD {
     private enum LifecycleState {
         case idle
         case starting
@@ -17,7 +15,6 @@ final class SimpleVAD {
         case failed
     }
 
-    weak var delegate: SimpleVADDelegate?
     var hangTime: TimeInterval
 
     private var analyzer: SpeechAnalyzer?
@@ -26,11 +23,15 @@ final class SimpleVAD {
     private var analyzerConverter: AVAudioConverter?
     private var transcriberTask: Task<Void, Never>?
     private var lifecycleState: LifecycleState = .idle
+    private var isListening = false
+    private var lastSpeechTime: TimeInterval?
+    private let detectionRMSThreshold: Float
 
     private let transcriptState = TranscriptState()
 
-    init(hangTime: TimeInterval = 2.0) {
+    init(hangTime: TimeInterval = 2.0, detectionRMSThreshold: Float = 0.02) {
         self.hangTime = hangTime
+        self.detectionRMSThreshold = detectionRMSThreshold
 
         Task {
             await setupSpeechPipeline()
@@ -42,15 +43,16 @@ final class SimpleVAD {
         transcriberTask?.cancel()
     }
 
-    func process(buffer: AVAudioPCMBuffer) {
-        guard lifecycleState == .ready, let copied = buffer.deepCopy() else { return }
-        processBuffer(copied)
+    func process(chunk: AudioChunk) async -> Event? {
+        guard lifecycleState == .ready else { return nil }
+        guard let buffer = AVAudioPCMBuffer.makeFrom(chunk: chunk) else { return nil }
+        return await processBuffer(buffer)
     }
 
-    func reset() {
-        Task { [weak self] in
-            await self?.transcriptState.reset()
-        }
+    func reset() async {
+        isListening = false
+        lastSpeechTime = nil
+        await transcriptState.reset()
     }
 
     private func setupSpeechPipeline() async {
@@ -58,7 +60,7 @@ final class SimpleVAD {
         lifecycleState = .starting
 
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current) else {
-            print("Warning: Current locale (\(Locale.current)) is not supported for speech detection.")
+            print("Warning: Current locale (\(Locale.current)) is not supported for speech transcription.")
             lifecycleState = .failed
             return
         }
@@ -72,28 +74,23 @@ final class SimpleVAD {
             return
         }
 
-        let detectionOptions = SpeechDetector.DetectionOptions(sensitivityLevel: .medium)
-        let detector = SpeechDetector(detectionOptions: detectionOptions, reportResults: false)
-
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [detector, transcriber]) else {
-            print("Error: Speech detector unavailable until required assets are installed.")
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+            print("Error: Speech transcriber unavailable until required assets are installed.")
             lifecycleState = .failed
             return
         }
 
-        let inputStream = AsyncStream<AnalyzerInput> { [weak self] continuation in
-            Task { @MainActor [weak self] in
-                self?.analyzerInputContinuation = continuation
-            }
-            continuation.onTermination = { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.analyzerInputContinuation = nil
+        let inputStream = AsyncStream<AnalyzerInput> { continuation in
+            analyzerInputContinuation = continuation
+            continuation.onTermination = { _ in
+                Task {
+                    await self.clearAnalyzerContinuation()
                 }
             }
         }
 
         let analyzer = SpeechAnalyzer(
-            modules: [detector, transcriber],
+            modules: [transcriber],
             options: .init(priority: .userInitiated, modelRetention: .lingering)
         )
 
@@ -102,8 +99,7 @@ final class SimpleVAD {
         analyzerConverter = nil
         lifecycleState = .ready
 
-        Task { [weak self] in
-            guard let self else { return }
+        Task {
             do {
                 try await analyzer.start(inputSequence: inputStream)
             } catch {
@@ -113,23 +109,19 @@ final class SimpleVAD {
         }
 
         transcriberTask?.cancel()
-        transcriberTask = Task { [weak self] in
-            guard let self else { return }
+        transcriberTask = Task {
             do {
                 for try await result in transcriber.results {
-                    let update = await transcriptState.recordResult(result, now: CACurrentMediaTime())
-                    if update.didStart {
-                        delegate?.didStartSpeaking()
-                        print("Did start listening.")
-                    }
-                    guard case let .stop(transcription, reason, idleDuration) = update.stopDecision else { continue }
-                    logStop(reason: reason, idleDuration: idleDuration)
-                    delegate?.didStopSpeaking(transcription: transcription)
+                    await transcriptState.recordResult(result)
                 }
             } catch {
                 print("Error: Transcriber results failed: \(error)")
             }
         }
+    }
+
+    private func clearAnalyzerContinuation() {
+        analyzerInputContinuation = nil
     }
 
     private func prepareAssets(for transcriber: SpeechTranscriber) async throws {
@@ -138,21 +130,38 @@ final class SimpleVAD {
         }
     }
 
-    private func processBuffer(_ buffer: AVAudioPCMBuffer) {
-        enqueueForSpeechDetection(buffer)
+    private func processBuffer(_ buffer: AVAudioPCMBuffer) async -> Event? {
+        enqueueForSpeechTranscription(buffer)
 
         let now = CACurrentMediaTime()
-        let timeout = hangTime
-        Task { [weak self] in
-            guard let self else { return }
-            let stopDecision = await transcriptState.timeoutDecision(now: now, timeout: timeout)
-            guard case let .stop(transcription, reason, idleDuration) = stopDecision else { return }
-            logStop(reason: reason, idleDuration: idleDuration)
-            delegate?.didStopSpeaking(transcription: transcription)
+        let isSpeechFrame = buffer.rmsLevel() >= detectionRMSThreshold
+
+        if isSpeechFrame {
+            if !isListening {
+                isListening = true
+                await transcriptState.beginUtterance()
+                print("Did start listening (RMS VAD).")
+                lastSpeechTime = now
+                return .started
+            }
+            lastSpeechTime = now
+            return nil
         }
+
+        guard isListening, let lastSpeechTime else { return nil }
+
+        let idleDuration = now - lastSpeechTime
+        guard idleDuration > hangTime else { return nil }
+
+        isListening = false
+        self.lastSpeechTime = nil
+
+        let transcription = await transcriptState.consumeTranscript()
+        print("Did stop listening after \(idleDuration)s below RMS threshold.")
+        return .stopped(transcription: transcription)
     }
 
-    private func enqueueForSpeechDetection(_ buffer: AVAudioPCMBuffer) {
+    private func enqueueForSpeechTranscription(_ buffer: AVAudioPCMBuffer) {
         guard let continuation = analyzerInputContinuation else { return }
         guard let converted = convertBufferIfNeeded(buffer) else { return }
         continuation.yield(AnalyzerInput(buffer: converted))
@@ -169,7 +178,7 @@ final class SimpleVAD {
         }
 
         guard let converter = analyzerConverter else {
-            print("Error: Unable to create audio converter for speech detection.")
+            print("Error: Unable to create audio converter for speech transcription.")
             return nil
         }
 
@@ -198,19 +207,10 @@ final class SimpleVAD {
         }
 
         if let error {
-            print("Error: Audio conversion failed for speech detection: \(error)")
+            print("Error: Audio conversion failed for speech transcription: \(error)")
             return nil
         }
         return outBuffer.frameLength > 0 ? outBuffer : nil
-    }
-
-    private func logStop(reason: TranscriptState.StopReason, idleDuration: TimeInterval) {
-        switch reason {
-        case .finalizedSegment:
-            print("Did stop listening for finalized segment.")
-        case .timeout:
-            print("Did stop listening after \(idleDuration)s without transcription updates.")
-        }
     }
 
     private func formatsMatch(_ lhs: AVAudioFormat?, _ rhs: AVAudioFormat?) -> Bool {
@@ -220,98 +220,52 @@ final class SimpleVAD {
             lhs.commonFormat == rhs.commonFormat &&
             lhs.isInterleaved == rhs.isInterleaved
     }
-
 }
 
 private actor TranscriptState {
-    enum StopReason: Sendable {
-        case finalizedSegment
-        case timeout
-    }
-
-    enum StopDecision: Sendable {
-        case none
-        case stop(transcription: String?, reason: StopReason, idleDuration: TimeInterval)
-    }
-
-    struct Update: Sendable {
-        let didStart: Bool
-        let stopDecision: StopDecision
-
-        static let none = Update(didStart: false, stopDecision: .none)
-    }
-
-    private var isListening = false
-    private var lastSpeechTime: TimeInterval?
     private var finalizedTranscript = ""
-    private var restartBoundary: TimeInterval?
-    private var latestFinalizationTime: TimeInterval = 0
-    private var segmentMaxRangeEnd: TimeInterval = 0
-    private let finalizationEpsilon: TimeInterval = 0.001
+    private var latestHypothesis: String?
 
     func reset() {
-        isListening = false
-        lastSpeechTime = nil
         finalizedTranscript = ""
-        restartBoundary = nil
-        latestFinalizationTime = 0
-        segmentMaxRangeEnd = 0
+        latestHypothesis = nil
     }
 
-    func recordResult(_ result: SpeechTranscriber.Result, now: TimeInterval) -> Update {
+    func beginUtterance() {
+        finalizedTranscript = ""
+        latestHypothesis = nil
+    }
+
+    func recordResult(_ result: SpeechTranscriber.Result) {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        let rangeStart = seconds(result.range.start)
-        let rangeEnd = seconds(result.range.end)
-        let resultsFinalization = seconds(result.resultsFinalizationTime)
+        guard !text.isEmpty else { return }
         let isFinalized = CMTimeCompare(result.resultsFinalizationTime, result.range.end) >= 0
 
-        var didStartNow = false
-
-        latestFinalizationTime = max(latestFinalizationTime, resultsFinalization)
-
-        if !isListening, let restartBoundary, rangeStart < restartBoundary {
-            return .none
-        }
-
-        if !isListening {
-            restartBoundary = nil
-            isListening = true
-            finalizedTranscript = ""
-            segmentMaxRangeEnd = 0
-            didStartNow = true
-        }
-        lastSpeechTime = now
-        segmentMaxRangeEnd = max(segmentMaxRangeEnd, rangeEnd)
-
         if isFinalized {
-            if rangeEnd + finalizationEpsilon < segmentMaxRangeEnd {
-                segmentMaxRangeEnd = max(rangeEnd, resultsFinalization)
-            }
             mergeFinalizedText(text)
+            latestHypothesis = nil
+        } else {
+            latestHypothesis = text
         }
-
-        if latestFinalizationTime + finalizationEpsilon >= segmentMaxRangeEnd, segmentMaxRangeEnd > 0 {
-            return Update(
-                didStart: didStartNow,
-                stopDecision: finishListening(reason: .finalizedSegment, idleDuration: 0, fallbackTranscription: text)
-            )
-        }
-
-        return Update(didStart: didStartNow, stopDecision: .none)
     }
 
-    func timeoutDecision(now: TimeInterval, timeout: TimeInterval) -> StopDecision {
-        guard isListening, let lastSpeechTime else { return .none }
+    func consumeTranscript() -> String? {
+        let finalized = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hypothesis = latestHypothesis?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let transcription: String? = if !finalized.isEmpty {
+            finalized
+        } else if let hypothesis, !hypothesis.isEmpty {
+            hypothesis
+        } else {
+            nil
+        }
 
-        let idleDuration = now - lastSpeechTime
-        guard idleDuration > timeout else { return .none }
-
-        return finishListening(reason: .timeout, idleDuration: idleDuration, fallbackTranscription: nil)
+        finalizedTranscript = ""
+        latestHypothesis = nil
+        return transcription
     }
 
     private func mergeFinalizedText(_ text: String) {
-        guard !text.isEmpty else { return }
-
         if finalizedTranscript.isEmpty {
             finalizedTranscript = text
             return
@@ -325,53 +279,91 @@ private actor TranscriptState {
         }
         finalizedTranscript += " " + text
     }
-
-    private func seconds(_ time: CMTime) -> TimeInterval {
-        let value = CMTimeGetSeconds(time)
-        return value.isFinite ? value : 0
-    }
-
-    private func finishListening(reason: StopReason, idleDuration: TimeInterval, fallbackTranscription: String?) -> StopDecision {
-        let finalized = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallback = fallbackTranscription?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transcription: String? = if !finalized.isEmpty {
-            finalized
-        } else if let fallback, !fallback.isEmpty {
-            fallback
-        } else {
-            nil
-        }
-
-        let boundary = max(latestFinalizationTime, segmentMaxRangeEnd)
-
-        isListening = false
-        lastSpeechTime = nil
-        finalizedTranscript = ""
-        segmentMaxRangeEnd = 0
-        restartBoundary = boundary
-
-        return .stop(transcription: transcription, reason: reason, idleDuration: idleDuration)
-    }
 }
 
 // MARK: - AVAudioPCMBuffer Helpers
 
 private extension AVAudioPCMBuffer {
-    func deepCopy() -> AVAudioPCMBuffer? {
-        guard let copied = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else {
+    static func makeFrom(chunk: AudioChunk) -> AVAudioPCMBuffer? {
+        guard chunk.channelCount > 0, chunk.frameLength > 0 else { return nil }
+        guard chunk.samples.count == chunk.frameLength * chunk.channelCount else { return nil }
+
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: chunk.sampleRate,
+            channels: AVAudioChannelCount(chunk.channelCount),
+            interleaved: chunk.isInterleaved
+        ) else {
             return nil
         }
-        copied.frameLength = frameLength
 
-        guard let src = floatChannelData, let dst = copied.floatChannelData else {
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(chunk.frameLength)
+        ) else {
             return nil
         }
 
+        buffer.frameLength = AVAudioFrameCount(chunk.frameLength)
+
+        guard let destination = buffer.floatChannelData else { return nil }
+
+        if chunk.isInterleaved {
+            _ = chunk.samples.withUnsafeBufferPointer { source in
+                memcpy(
+                    destination[0],
+                    source.baseAddress!,
+                    chunk.samples.count * MemoryLayout<Float>.size
+                )
+            }
+        } else {
+            for channel in 0 ..< chunk.channelCount {
+                let sourceOffset = channel * chunk.frameLength
+                _ = chunk.samples.withUnsafeBufferPointer { source in
+                    memcpy(
+                        destination[channel],
+                        source.baseAddress!.advanced(by: sourceOffset),
+                        chunk.frameLength * MemoryLayout<Float>.size
+                    )
+                }
+            }
+        }
+
+        return buffer
+    }
+
+    func rmsLevel() -> Float {
+        guard format.commonFormat == .pcmFormatFloat32 else {
+            assertionFailure("SimpleVAD only supports .pcmFormatFloat32.")
+            return 0
+        }
+
+        let frameCount = Int(frameLength)
         let channelCount = Int(format.channelCount)
-        let bytes = Int(frameLength) * MemoryLayout<Float>.size
-        for channel in 0 ..< channelCount {
-            memcpy(dst[channel], src[channel], bytes)
+        guard frameCount > 0, channelCount > 0 else { return 0 }
+        guard let data = floatChannelData else { return 0 }
+
+        var sumSquares = 0.0
+        var sampleCount = 0
+
+        if format.isInterleaved {
+            let totalSamples = frameCount * channelCount
+            for idx in 0 ..< totalSamples {
+                let sample = Double(data[0][idx])
+                sumSquares += sample * sample
+            }
+            sampleCount = totalSamples
+        } else {
+            for channel in 0 ..< channelCount {
+                for frame in 0 ..< frameCount {
+                    let sample = Double(data[channel][frame])
+                    sumSquares += sample * sample
+                }
+            }
+            sampleCount = frameCount * channelCount
         }
-        return copied
+
+        guard sampleCount > 0 else { return 0 }
+        return Float(sqrt(sumSquares / Double(sampleCount)))
     }
 }
