@@ -40,8 +40,8 @@ actor SemanticVAD {
     private let transcriptState = TranscriptState()
 
     init(
-        hangTime: TimeInterval = 2.0,
-        detectionRMSThreshold: Float = 0.02,
+        hangTime: TimeInterval = 0.8,
+        detectionRMSThreshold: Float = 0.01,
         smartTurnRepoID: String = "mlx-community/smart-turn-v3",
         smartTurnThreshold: Float? = nil
     ) {

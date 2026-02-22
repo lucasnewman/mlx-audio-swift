@@ -6,14 +6,14 @@ import MLXAudioTTS
 import MLXLMCommon
 
 @MainActor
-protocol SpeechControllerDelegate: AnyObject {
-    func speechControllerDidStartUserSpeech(_ controller: SpeechController)
-    func speechController(_ controller: SpeechController, didFinish transcription: String)
+protocol ConversationControllerDelegate: AnyObject {
+    func conversationControllerDidStartUserSpeech(_ controller: ConversationController)
+    func conversationController(_ controller: ConversationController, didFinish transcription: String)
 }
 
 @MainActor
 @Observable
-final class SpeechController {
+final class ConversationController {
     private enum TurnMarker {
         case complete
         case incompleteShort
@@ -24,22 +24,6 @@ final class SpeechController {
         case short
         case long
 
-        var seconds: TimeInterval {
-            switch self {
-            case .short: 3
-            case .long: 10
-            }
-        }
-
-        var prompt: String {
-            switch self {
-            case .short:
-                SpeechController.incompleteShortPrompt
-            case .long:
-                SpeechController.incompleteLongPrompt
-            }
-        }
-
         var logLabel: String {
             switch self {
             case .short: "short"
@@ -48,9 +32,29 @@ final class SpeechController {
         }
     }
 
+    struct UserTurnCompletionConfig: Sendable {
+        var instructions: String?
+        var incompleteShortTimeout: TimeInterval = 3
+        var incompleteLongTimeout: TimeInterval = 10
+        var incompleteShortPrompt: String?
+        var incompleteLongPrompt: String?
+
+        var completionInstructions: String {
+            instructions ?? ConversationController.defaultTurnCompletionInstructions
+        }
+
+        var shortPrompt: String {
+            incompleteShortPrompt ?? ConversationController.defaultIncompleteShortPrompt
+        }
+
+        var longPrompt: String {
+            incompleteLongPrompt ?? ConversationController.defaultIncompleteLongPrompt
+        }
+    }
+
     private nonisolated static let baseInstructions = "You are a helpful voice assistant. Your goal is to demonstrate your capabilities in a succinct way. Your output will be spoken aloud, so avoid special characters that can't easily be spoken, such as emojis or bullet points."
 
-    private nonisolated static let turnCompletionInstructions = """
+    private nonisolated static let defaultTurnCompletionInstructions = """
     CRITICAL INSTRUCTION - MANDATORY RESPONSE FORMAT:
     Every single response MUST begin with a turn completion indicator. This is not optional.
 
@@ -91,7 +95,7 @@ final class SpeechController {
     - Your turn indicator must be the very first character in your response
     """
 
-    private nonisolated static let incompleteShortPrompt = """
+    private nonisolated static let defaultIncompleteShortPrompt = """
     The user paused briefly. Generate a brief, natural prompt to encourage them to continue.
 
     IMPORTANT: You MUST respond with ✓ followed by your message. Do NOT output ○ or ◐ - the user has already been given time to continue.
@@ -103,7 +107,7 @@ final class SpeechController {
     - Gently prompt them to continue
     """
 
-    private nonisolated static let incompleteLongPrompt = """
+    private nonisolated static let defaultIncompleteLongPrompt = """
     The user has been quiet for a while. Generate a friendly check-in message.
 
     IMPORTANT: You MUST respond with ✓ followed by your message. Do NOT output ○ or ◐ - the user has already been given plenty of time.
@@ -116,7 +120,7 @@ final class SpeechController {
     """
 
     @ObservationIgnored
-    weak var delegate: SpeechControllerDelegate?
+    weak var delegate: ConversationControllerDelegate?
 
     private(set) var isActive: Bool = false
     private(set) var isDetectingSpeech = false
@@ -145,6 +149,10 @@ final class SpeechController {
     private var llmTurnTask: Task<Void, Never>?
     @ObservationIgnored
     private var incompleteTimeoutRevision: Int = 0
+    @ObservationIgnored
+    private var llmTurnRevision: Int = 0
+    @ObservationIgnored
+    private var turnCompletionConfig = UserTurnCompletionConfig()
 
     init(ttsRepoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit") {
         self.audioEngine = AudioEngine(inputBufferSize: 1024)
@@ -208,6 +216,10 @@ final class SpeechController {
         audioEngine.endSpeaking()
     }
 
+    func setUserTurnCompletionConfig(_ config: UserTurnCompletionConfig) {
+        turnCompletionConfig = config
+    }
+
     func speak(text: String) async throws {
         guard let model else {
             print("Error: TTS model not yet loaded.")
@@ -228,7 +240,7 @@ final class SpeechController {
     }
 
     private func resetLanguageSession() {
-        let instructions = Self.baseInstructions + "\n\n" + Self.turnCompletionInstructions
+        let instructions = Self.baseInstructions + "\n\n" + turnCompletionConfig.completionInstructions
         languageSession = LanguageModelSession(instructions: instructions)
     }
 
@@ -267,12 +279,13 @@ final class SpeechController {
         case .started:
             isDetectingSpeech = true
             cancelIncompleteTimeout()
-            delegate?.speechControllerDidStartUserSpeech(self)
+            cancelLLMTurnTask()
+            delegate?.conversationControllerDidStartUserSpeech(self)
         case let .stopped(transcription):
             isDetectingSpeech = false
             let cleaned = transcription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !cleaned.isEmpty else { return }
-            delegate?.speechController(self, didFinish: cleaned)
+            delegate?.conversationController(self, didFinish: cleaned)
             handleCompletedUserTranscript(cleaned)
         }
     }
@@ -281,6 +294,11 @@ final class SpeechController {
         incompleteTimeoutRevision += 1
         incompleteTimeoutTask?.cancel()
         incompleteTimeoutTask = nil
+        cancelLLMTurnTask()
+    }
+
+    private func cancelLLMTurnTask() {
+        llmTurnRevision += 1
         llmTurnTask?.cancel()
         llmTurnTask = nil
     }
@@ -294,9 +312,19 @@ final class SpeechController {
     private func scheduleIncompleteTimeout(_ kind: IncompleteTimeoutKind) {
         cancelIncompleteTimeout()
         let revision = incompleteTimeoutRevision
-        let delayNanos = UInt64(kind.seconds * 1_000_000_000)
+        let timeout: TimeInterval
+        let prompt: String
+        switch kind {
+        case .short:
+            timeout = turnCompletionConfig.incompleteShortTimeout
+            prompt = turnCompletionConfig.shortPrompt
+        case .long:
+            timeout = turnCompletionConfig.incompleteLongTimeout
+            prompt = turnCompletionConfig.longPrompt
+        }
+        let delayNanos = UInt64(timeout * 1_000_000_000)
 
-        print("Turn marked incomplete (\(kind.logLabel)); scheduling reprompt in \(kind.seconds)s")
+        print("Turn marked incomplete (\(kind.logLabel)); scheduling reprompt in \(timeout)s")
 
         incompleteTimeoutTask = Task { @MainActor [weak self] in
             do {
@@ -307,7 +335,30 @@ final class SpeechController {
             guard let self else { return }
             guard revision == self.incompleteTimeoutRevision else { return }
             self.incompleteTimeoutTask = nil
-            await self.requestTurnAwareResponse(prompt: kind.prompt, source: "incomplete_\(kind.logLabel)_timeout")
+            self.startLLMTurnTask(
+                prompt: prompt,
+                source: "incomplete_\(kind.logLabel)_timeout",
+                originalTranscript: nil
+            )
+        }
+    }
+
+    private func startLLMTurnTask(
+        prompt: String,
+        source: String,
+        originalTranscript: String?
+    ) {
+        cancelLLMTurnTask()
+        let revision = llmTurnRevision
+        llmTurnTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.requestTurnAwareResponse(
+                prompt: prompt,
+                source: source,
+                originalTranscript: originalTranscript
+            )
+            guard revision == self.llmTurnRevision else { return }
+            self.llmTurnTask = nil
         }
     }
 
@@ -319,6 +370,7 @@ final class SpeechController {
         guard let session = languageSession else { return }
 
         do {
+            print("Using LLM prompt:\n\(prompt)")
             let response = try await session.respond(to: prompt)
             print("LLM turn response [\(source)]: \(response.content)")
             try await handleTurnResponse(
@@ -401,35 +453,48 @@ final class SpeechController {
     }
 
     private func parseTurnResponse(_ text: String) -> (TurnMarker, String)? {
-        let trimmedLeading = String(text.drop(while: { $0.isWhitespace }))
-        guard let first = trimmedLeading.first else { return nil }
+        let matches: [(marker: TurnMarker, index: String.Index)] = [
+            (.complete, text.firstIndex(of: "✓")),
+            (.incompleteShort, text.firstIndex(of: "○")),
+            (.incompleteLong, text.firstIndex(of: "◐")),
+        ].compactMap { marker, index in
+            guard let index else { return nil }
+            return (marker, index)
+        }
 
-        switch first {
-        case "✓":
-            let remaining = String(trimmedLeading.dropFirst())
-            let content = remaining.hasPrefix(" ") ? String(remaining.dropFirst()) : remaining
+        guard let firstMatch = matches.min(by: { $0.index < $1.index }) else { return nil }
+
+        switch firstMatch.marker {
+        case .complete:
+            var withoutMarker = text
+            withoutMarker.remove(at: firstMatch.index)
+            let content = withoutMarker.trimmingCharacters(in: .whitespacesAndNewlines)
             return (.complete, content)
-        case "○":
+        case .incompleteShort:
             return (.incompleteShort, "")
-        case "◐":
+        case .incompleteLong:
             return (.incompleteLong, "")
-        default:
-            return nil
         }
     }
 
     private func handleCompletedUserTranscript(_ transcription: String) {
         guard !isSpeaking, transcription.count > 1 else { return }
+        let prompt = """
+        Determine whether the user has completed their turn, then respond in the required marker format.
 
-        llmTurnTask?.cancel()
-        llmTurnTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.requestTurnAwareResponse(
-                prompt: transcription,
-                source: "user_transcript",
-                originalTranscript: transcription
-            )
-        }
+        User transcript:
+        \(transcription)
+
+        IMPORTANT:
+        - Your response MUST begin with exactly one turn marker: ✓, ○, or ◐.
+        - If COMPLETE, respond with ✓ followed by a space and your response text.
+        - If INCOMPLETE, respond with ONLY ○ or ONLY ◐ and no additional text.
+        """
+        startLLMTurnTask(
+            prompt: prompt,
+            source: "user_transcript",
+            originalTranscript: transcription
+        )
     }
 
     @concurrent
@@ -449,7 +514,7 @@ final class SpeechController {
 
 // MARK: - AudioEngineDelegate
 
-extension SpeechController: @MainActor AudioEngineDelegate {
+extension ConversationController: @MainActor AudioEngineDelegate {
     func audioCaptureEngine(_ engine: AudioEngine, isSpeakingDidChange speaking: Bool) {
         isSpeaking = speaking
     }

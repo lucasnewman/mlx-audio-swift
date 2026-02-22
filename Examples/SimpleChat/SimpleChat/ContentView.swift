@@ -7,15 +7,15 @@ import UIKit
 @MainActor
 @Observable
 class ContentViewModel {
-    var speechController = SpeechController()
+    var conversationController = ConversationController()
 
     init() {
-        speechController.delegate = self
+        conversationController.delegate = self
     }
 
     func startConversation() async throws {
         print("Starting conversation...")
-        try await speechController.start()
+        try await conversationController.start()
 
 #if canImport(UIKit)
         UIApplication.shared.isIdleTimerDisabled = true
@@ -23,7 +23,7 @@ class ContentViewModel {
     }
 
     func stopConversation() async throws {
-        try await speechController.stop()
+        try await conversationController.stop()
 
 #if canImport(UIKit)
         UIApplication.shared.isIdleTimerDisabled = false
@@ -34,12 +34,12 @@ class ContentViewModel {
 }
 
 @MainActor
-extension ContentViewModel: SpeechControllerDelegate {
-    func speechControllerDidStartUserSpeech(_ controller: SpeechController) {
+extension ContentViewModel: ConversationControllerDelegate {
+    func conversationControllerDidStartUserSpeech(_ controller: ConversationController) {
         // no-op
     }
 
-    func speechController(_ controller: SpeechController, didFinish transcription: String) {
+    func conversationController(_ controller: ConversationController, didFinish transcription: String) {
         print("Got transcription: '\(transcription)'")
     }
 }
@@ -58,10 +58,10 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
-        .onChange(of: viewModel.speechController.canSpeak) { _, newValue in
+        .onChange(of: viewModel.conversationController.canSpeak) { _, newValue in
             if newValue {
                 Task {
-                    if !viewModel.speechController.isActive {
+                    if !viewModel.conversationController.isActive {
                         try await viewModel.startConversation()
                     }
                 }
@@ -71,12 +71,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var assistantCircle: some View {
-        let isActive = viewModel.speechController.isActive
-        let isSpeaking = viewModel.speechController.isSpeaking
+        let isActive = viewModel.conversationController.isActive
+        let isSpeaking = viewModel.conversationController.isSpeaking
 
         ZStack {
             Button {
-                if viewModel.speechController.canSpeak {
+                if viewModel.conversationController.canSpeak {
                     Task {
                         if permissionStatus == .undetermined {
                             let granted = await AVAudioApplication.requestRecordPermission()
@@ -99,13 +99,13 @@ struct ContentView: View {
             .padding(64)
         }
         .scaleEffect(CGSize(width: isActive ? 1.0 : 0.7, height: isActive ? 1.0 : 0.7))
-        .animation(.easeOut(duration: 0.2), value: viewModel.speechController.isActive)
-        .animation(.easeOut(duration: 0.4), value: viewModel.speechController.isSpeaking)
+        .animation(.easeOut(duration: 0.2), value: viewModel.conversationController.isActive)
+        .animation(.easeOut(duration: 0.4), value: viewModel.conversationController.isSpeaking)
     }
 
     private func toggleConversation() async throws {
         do {
-            if !viewModel.speechController.isActive {
+            if !viewModel.conversationController.isActive {
                 try await viewModel.startConversation()
             } else {
                 try await viewModel.stopConversation()
