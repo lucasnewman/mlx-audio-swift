@@ -223,7 +223,7 @@ class SineGen: Module {
 
     func callAsFunction(_ f0: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
         // f0: (B, 1, T)
-        let B = f0.dim(0), T = f0.dim(2)
+        let B = f0.dim(0)
 
         // Create harmonics multiplier: [1, 2, ..., harmonicNum+1]
         let harmonicMult = (MLXArray(1 ... (harmonicNum + 1)).asType(.float32))
@@ -285,7 +285,7 @@ class SourceModuleHnNSF: Module {
     func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
         // x: (B, 1, T) F0 values
         // Generate sine harmonics — SineGen expects (B, 1, T) directly
-        var (sineWavs, uv, _) = lSinGen(x)
+        let (sineWavs, uv, _) = lSinGen(x)
         // sineWavs: (B, harmonics+1, T), uv: (B, 1, T)
 
         // Merge harmonics with linear layer
@@ -310,7 +310,7 @@ private func reverseAlongAxis(_ x: MLXArray, axis: Int) -> MLXArray {
 /// Short-Time Fourier Transform for HiFi-GAN.
 func hifigan_stft(x: MLXArray, nFft: Int, hopLength: Int, window: MLXArray) -> (MLXArray, MLXArray)
 {
-    let B = x.dim(0), T = x.dim(1)
+    let B = x.dim(0)
 
     // Reflect padding
     let padLength = nFft / 2
@@ -358,7 +358,7 @@ func hifigan_istft(
     let real = clippedMag * MLX.cos(phase)
     let imag = clippedMag * MLX.sin(phase)
 
-    let B = real.dim(0), F = real.dim(1), numFrames = real.dim(2)
+    let B = real.dim(0), numFrames = real.dim(2)
 
     // Construct complex spectrum
     let imagUnit = MLXArray(real: Float(0), imaginary: Float(1))
@@ -500,7 +500,7 @@ class HiFTGenerator: Module {
         // For [8, 5, 3]: reversed = [3, 5, 8], [:-1] = [3, 5], so [1, 3, 5]
         // downsample_cum = cumprod([1, 3, 5]) = [1, 3, 15]
         // reversed = [15, 3, 1]
-        var downsampleRates = [1] + Array(upsampleRates.reversed().dropLast())
+        let downsampleRates = [1] + Array(upsampleRates.reversed().dropLast())
         var downsampleCum: [Int] = []
         var cumProd = 1
         for r in downsampleRates {
@@ -646,7 +646,7 @@ class HiFTGenerator: Module {
     func callAsFunction(_ speechFeat: MLXArray, cacheSource: MLXArray? = nil)
         -> (MLXArray, MLXArray)
     {
-        var cache = cacheSource ?? MLXArray.zeros([1, 1, 0])
+        let cache = cacheSource ?? MLXArray.zeros([1, 1, 0])
 
         // Predict F0
         let f0 = f0Predictor(speechFeat)

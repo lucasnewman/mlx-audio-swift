@@ -409,7 +409,7 @@ public class T3Model: Module {
         let inputEmbeddings = MLX.concatenated([condEmbForInput, textEmbResult, bosEmbed], axis: 1)
 
         // Create KV cache
-        var cache = makeCache()
+        let cache = makeCache()
 
         // Initial forward pass to fill cache
         var hidden = tfmr(inputEmbeddings, cache: cache)

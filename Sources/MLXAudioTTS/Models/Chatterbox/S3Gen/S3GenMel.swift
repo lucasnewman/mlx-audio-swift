@@ -42,8 +42,7 @@ func s3genMelSpectrogram(
     y: MLXArray,
     nFft: Int = 1920, numMels: Int = 80,
     samplingRate: Int = 24000, hopSize: Int = 480,
-    winSize: Int = 1920, fmin: Int = 0, fmax: Int = 8000
-) -> MLXArray {
+    winSize: Int = 1920, fmin: Int = 0, fmax: Int = 8000) -> MLXArray {
     var input = y
     let was1D = input.ndim == 1
     if was1D {
@@ -62,12 +61,11 @@ func s3genMelSpectrogram(
     for i in 0 ..< B {
         let spec = stft(
             audio: input[i], window: window,
-            nFft: nFft, hopLength: hopSize,
-            center: false)
+            nFft: nFft, hopLength: hopSize)
         specs.append(spec)
     }
     // Stack: each spec is (T', F) -> (B, T', F)
-    var spec = MLX.stacked(specs, axis: 0)
+    let spec = MLX.stacked(specs, axis: 0)
 
     // Magnitude
     let magnitudes = abs(spec) // (B, T', F)

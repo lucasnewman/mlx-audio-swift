@@ -587,8 +587,6 @@ class S3GenUpsample1D: Module {
         -> (MLXArray, MLXArray)
     {
         // inputs: (B, C, T) PyTorch format
-        let B = inputs.dim(0), C = inputs.dim(1)
-
         // Repeat each timestep stride times
         var outputs = MLX.repeated(inputs, count: strideVal, axis: 2)
 
@@ -779,7 +777,7 @@ class UpsampleConformerEncoder: Module {
 
         // Create encoder layers
         var encoderLayers = [S3GenConformerEncoderLayer]()
-        for i in 0 ..< numBlocks {
+        for _ in 0 ..< numBlocks {
             let attnModule: Module
             if selfattentionLayerType == "rel_selfattn" {
                 attnModule = S3GenRelPositionMultiHeadedAttention(
@@ -819,7 +817,7 @@ class UpsampleConformerEncoder: Module {
 
         // Create up-encoder layers
         var upEncoderLayers = [S3GenConformerEncoderLayer]()
-        for i in 0 ..< numUpBlocks {
+        for _ in 0 ..< numUpBlocks {
             let attnModule: Module
             if selfattentionLayerType == "rel_selfattn" {
                 attnModule = S3GenRelPositionMultiHeadedAttention(

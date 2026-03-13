@@ -476,7 +476,7 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         let altGlobalQuant = try container.decodeIfPresent(
             BaseConfiguration.Quantization.self, forKey: .quantizationConfig
         )
-        self.quantization = globalQuant ?? altGlobalQuant ?? baseConfig?.quantization
+        self.quantization = globalQuant ?? altGlobalQuant ?? baseConfig?.perLayerQuantization?.quantization
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
 

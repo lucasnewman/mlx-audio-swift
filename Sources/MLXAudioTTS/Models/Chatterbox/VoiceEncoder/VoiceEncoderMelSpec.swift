@@ -50,7 +50,7 @@ public func voiceEncoderMelSpectrogram(
     }
 
     // Stack: (B, T', F)
-    var spec = MLX.stacked(specs, axis: 0)
+    let spec = MLX.stacked(specs, axis: 0)
 
     // Magnitudes
     var specMagnitudes = MLX.abs(spec)

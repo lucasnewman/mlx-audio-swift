@@ -407,11 +407,9 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     ///   - mel2wav.m_source.l_linear.{w,b}            (Linear, not Conv1d)
     ///   - mel2wav.m_source.l_sin_gen.*                (no parameters)
     static func remapRegularMel2WavKey(_ key: String) -> String {
-        var k = key
-
         // Strip mel2wav. prefix, process, then re-add
-        guard k.hasPrefix("mel2wav.") else { return k }
-        let subKey = String(k.dropFirst("mel2wav.".count))
+        guard key.hasPrefix("mel2wav.") else { return key }
+        let subKey = String(key.dropFirst("mel2wav.".count))
 
         // Match all Conv1d/ConvTranspose1d terminal patterns:
         //   conv_pre.{weight,bias}
@@ -721,7 +719,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         print("[Chatterbox] Text tokenized: \(textTokens.shape)")
 
         let temperature = generationParameters.temperature
-        let topP = generationParameters.topP ?? 0.95
+        let topP = generationParameters.topP
 
         // Cap max tokens: when using reference audio without prompt speech tokens,
         // the model may not generate EOS reliably, so use a smaller limit.
