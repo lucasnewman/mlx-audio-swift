@@ -122,7 +122,7 @@ public class VoiceEncoder: Module {
         var finalHiddenStates = [MLXArray]()
 
         for layer in lstmLayers {
-            let (allH, allC) = layer(output)
+            let (allH, _) = layer(output)
             output = allH
 
             // Extract final timestep hidden state

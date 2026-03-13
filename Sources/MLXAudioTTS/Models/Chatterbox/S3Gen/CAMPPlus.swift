@@ -144,7 +144,7 @@ private func statisticsPooling(_ x: MLXArray, axis: Int = -1) -> MLXArray {
 /// pools each segment, expands back to original length.
 private func segPooling(_ x: MLXArray, segLen: Int = 100) -> MLXArray {
     // x: (B, C, T)
-    let B = x.dim(0), C = x.dim(1), T = x.dim(2)
+    let T = x.dim(2)
 
     if T <= segLen {
         // Single segment — just mean, expand to match T
@@ -304,7 +304,7 @@ class FCM: Module {
         // x: (B, F, T) in PyTorch NCHW convention
         // MLX Conv2d expects NHWC: (B, H, W, C)
         // Treat F as H, T as W, C=1
-        let B = x.dim(0), F = x.dim(1), T = x.dim(2)
+        let B = x.dim(0)
 
         // (B, F, T) -> (B, F, T, 1) — NHWC with C=1
         var out = x.expandedDimensions(axis: 3)
