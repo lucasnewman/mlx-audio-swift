@@ -131,9 +131,10 @@ public final class FishS1Attention: Module {
         let kvSize = nLocalHeads * headDim
 
         let qkv = wqkv(x)
-        var q = qkv[0..., 0..., 0..<kvSize]
-        var k = qkv[0..., 0..., kvSize..<(2 * kvSize)]
-        var v = qkv[0..., 0..., (2 * kvSize)..<(3 * kvSize)]
+        let qkvSplit = qkv.split(indices: [kvSize, 2 * kvSize], axis: -1)
+        var q = qkvSplit[0]
+        var k = qkvSplit[1]
+        var v = qkvSplit[2]
 
         q = q.reshaped([batch, seqLen, nHead, headDim])
         k = k.reshaped([batch, seqLen, nLocalHeads, headDim])
