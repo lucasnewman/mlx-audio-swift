@@ -1453,15 +1453,53 @@ struct Qwen3ASRHelperTests {
             Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
         )
 
+        // Qwen3-ASR's `context` is designed for hotword biasing — realistic
+        // usage is space-separated vocabulary terms, not natural-language
+        // instructions.
         let prompt = model.buildPromptText(
             numAudioTokens: 3,
-            context: "Prefer product names over pronouns.",
+            context: "TypeWhisper MLX CoreML",
             language: "en"
         )
 
-        #expect(prompt.hasPrefix("<|im_start|>system\nPrefer product names over pronouns.<|im_end|>\n"))
+        // No trailing newline between context and `<|im_end|>`: matches the
+        // official HF `chat_template` and QwenLM/Qwen3-ASR inference code.
+        #expect(prompt.hasPrefix("<|im_start|>system\nTypeWhisper MLX CoreML<|im_end|>\n"))
         #expect(prompt.contains("<|audio_start|><|audio_pad|><|audio_pad|><|audio_pad|><|audio_end|>"))
         #expect(prompt.hasSuffix("<|im_start|>assistant\nlanguage English<asr_text>"))
+    }
+
+    @Test func qwen3ASRPromptTextEmptyContextProducesNoStrayWhitespace() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        // Default (empty) context must not introduce whitespace inside the
+        // system turn.
+        let prompt = model.buildPromptText(
+            numAudioTokens: 1,
+            language: "en"
+        )
+
+        #expect(prompt.hasPrefix("<|im_start|>system\n<|im_end|>\n"))
+        #expect(prompt.contains("<|audio_start|><|audio_pad|><|audio_end|>"))
+        #expect(prompt.hasSuffix("<|im_start|>assistant\nlanguage English<asr_text>"))
+    }
+
+    @Test func qwen3ASRPromptTextNilLanguageOmitsAssistantPrefix() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        // Auto-detect mode: no forced language prefix after `assistant\n`.
+        let prompt = model.buildPromptText(
+            numAudioTokens: 2,
+            context: "TypeWhisper MLX CoreML",
+            language: nil
+        )
+
+        #expect(prompt.hasPrefix("<|im_start|>system\nTypeWhisper MLX CoreML<|im_end|>\n"))
+        #expect(prompt.hasSuffix("<|im_start|>assistant\n"))
     }
 
     @Test func getFeatExtractOutputLengthsBasic() {
