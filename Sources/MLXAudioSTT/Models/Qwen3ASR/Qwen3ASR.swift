@@ -1140,13 +1140,21 @@ public class Qwen3ASRModel: Module {
         return merged.isEmpty ? nil : merged.joined(separator: ",")
     }
 
+    /// Builds the raw prompt text for Qwen3-ASR.
+    ///
+    /// - Parameters:
+    ///   - numAudioTokens: Number of `<|audio_pad|>` placeholders to emit.
+    ///   - context: Optional hotword-biasing text placed in the system turn.
+    ///     Use space-separated vocabulary terms (domain/product names, proper
+    ///     nouns) rather than natural-language instructions — the model treats
+    ///     this as recognition-bias conditioning, not an instruction to follow.
+    ///     Matches the `context` parameter in the official `QwenLM/Qwen3-ASR` API.
+    ///   - language: Optional forced output language; nil for auto-detect.
     func buildPromptText(
         numAudioTokens: Int,
         context: String = "",
         language: String? = nil
     ) -> String {
-        let systemContext = context.isEmpty ? "" : context
-
         let assistantPrefix: String
         if let langName = normalizeLanguageName(language) {
             assistantPrefix = "language \(langName)<asr_text>"
@@ -1154,7 +1162,7 @@ public class Qwen3ASRModel: Module {
             assistantPrefix = ""
         }
 
-        return "<|im_start|>system\n\(systemContext)<|im_end|>\n"
+        return "<|im_start|>system\n\(context)<|im_end|>\n"
             + "<|im_start|>user\n<|audio_start|>"
             + String(repeating: "<|audio_pad|>", count: numAudioTokens)
             + "<|audio_end|><|im_end|>\n"
