@@ -16,7 +16,10 @@ public enum ModelUtils {
         )
         let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
-            return (config["model_type"] as? String) ?? (config["architecture"] as? String) ?? modelNameComponents?.first?.lowercased()
+            return (config["model_type"] as? String)
+                ?? (config["architecture"] as? String)
+                ?? (config["model_version"] as? String)
+                ?? modelNameComponents?.first?.lowercased()
         }
         return nil
     }
@@ -63,7 +66,8 @@ public enum ModelUtils {
         cache: HubCache = .default,
         repoID: Repo.ID,
         requiredExtension: String,
-        additionalMatchingPatterns: [String] = []
+        additionalMatchingPatterns: [String] = [],
+        progressHandler: (@MainActor @Sendable (Progress) -> Void)? = nil
     ) async throws -> URL {
         let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
             ? String(requiredExtension.dropFirst())
@@ -122,7 +126,7 @@ public enum ModelUtils {
             to: modelDir,
             revision: "main",
             matching: Array(allowedExtensions),
-            progressHandler: { progress in
+            progressHandler: progressHandler ?? { progress in
                 print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
             }
         )
