@@ -61,6 +61,267 @@ private func cleanupTemporaryArtifactDirectory(_ directory: URL) {
     try? FileManager.default.removeItem(at: directory)
 }
 
+private struct MossFakeTokenizer: MossTextTokenizing {
+    func encode(_ text: String) -> [Int] {
+        text.utf8.map { Int($0 % 50) + 10 }
+    }
+
+    func decode(_ tokenIDs: [Int]) -> String {
+        String(tokenIDs.map { Character(UnicodeScalar(($0 - 10) % 50 + 65)!) })
+    }
+}
+
+private func makeTinyMossConfig(nVQ: Int = 2) throws -> MossTTSNanoConfig {
+    try MossTTSNanoConfig(
+        gpt2Config: MossGPT2Config(
+            vocabSize: 128,
+            nPositions: 64,
+            nCtx: 64,
+            nEmbd: 16,
+            nLayer: 1,
+            nHead: 4,
+            nInner: 32,
+            positionEmbeddingType: "rope"
+        ),
+        nVQ: nVQ,
+        audioVocabSize: 8,
+        audioCodebookSizes: Array(repeating: 8, count: nVQ),
+        audioPadTokenID: 8,
+        localTransformerLayers: 1,
+        maxPositionEmbeddings: 64,
+        hiddenSize: 16,
+        vocabSize: 128
+    )
+}
+
+@Suite("MOSS TTS Nano Tests")
+struct MossTTSNanoTests {
+    @Test func configDecodesUpstreamAliases() throws {
+        let json = """
+        {
+          "model_type": "moss_tts_nano",
+          "n_vq": 2,
+          "audio_vocab_size": 8,
+          "audio_codebook_sizes": [8, 9],
+          "gpt2_config": {
+            "vocab_size": 128,
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 4,
+            "intermediate_size": 32,
+            "position_embedding_type": "rope"
+          }
+        }
+        """
+        let config = try JSONDecoder().decode(MossTTSNanoConfig.self, from: Data(json.utf8))
+        #expect(config.nVQ == 2)
+        #expect(config.audioCodebookSizes == [8, 9])
+        #expect(config.gpt2Config.nEmbd == 16)
+        #expect(config.gpt2Config.nLayer == 1)
+        #expect(config.gpt2Config.nHead == 4)
+        #expect(config.localGPT2Config().nPositions == 3)
+    }
+
+    @Test func configRejectsBadCodebookCount() {
+        #expect(throws: DecodingError.self) {
+            _ = try MossTTSNanoConfig(nVQ: 2, audioCodebookSizes: [8])
+        }
+    }
+
+    @Test func textUtilitiesMatchPromptShape() throws {
+        let tokenizer = MossFakeTokenizer()
+        let config = try makeTinyMossConfig()
+
+        let prefix = mossBuildUserPromptPrefix(tokenizer: tokenizer, config: config)
+        #expect(prefix.first == config.imStartTokenID)
+        #expect(prefix.count > 5)
+
+        let prepared = try mossPrepareTextForSentenceChunking("hello world")
+        #expect(prepared == "        Hello world.")
+
+        let chunks = try mossSplitTextIntoBestSentences(
+            tokenizer: tokenizer,
+            text: "one two three, four five six, seven eight nine.",
+            maxTokens: 14
+        )
+        #expect(chunks.count > 1)
+    }
+
+    @Test func sentencePieceBPEUsesMergeScores() throws {
+        let json = """
+        {
+          "model": {
+            "type": "BPE",
+            "unk_id": 0,
+            "vocab": [
+              ["<unk>", 0.0],
+              ["▁", -100.0],
+              ["A", -100.0],
+              ["B", -100.0],
+              ["C", -100.0],
+              ["▁A", -10.0],
+              ["AB", -20.0],
+              ["BC", -1.0]
+            ]
+          }
+        }
+        """
+        let tokenizer = try SentencePieceTokenizer(tokenizerJSONData: Data(json.utf8))
+        #expect(tokenizer.encodeWithByteFallback("ABC") == [5, 7])
+    }
+
+    @Test func promptRowsAndEmbeddingsHaveExpectedShapes() throws {
+        let config = try makeTinyMossConfig()
+        let model = MossTTSNanoModel(config: config)
+
+        let textRows = model.buildTextRows([11, 12]).asArray(Int32.self)
+        #expect(textRows == [11, 8, 8, 12, 8, 8])
+
+        let promptCodes = MLXArray([Int32(1), Int32(2), Int32(3), Int32(4)], [2, 2])
+        let audioRows = try model.buildAudioPrefixRows(
+            promptAudioCodes: promptCodes,
+            slotTokenID: config.audioUserSlotTokenID
+        )
+        #expect(audioRows.asArray(Int32.self) == [8, 1, 2, 8, 3, 4])
+
+        let inputIDs = MLXArray([Int32(11), 1, 8, 12, 8, 2], [1, 2, 3]).asType(.int32)
+        let embeds = try model.buildInputsEmbeds(inputIDs)
+        #expect(embeds.shape == [1, 2, 16])
+    }
+
+    @Test func inferenceInputBuilderCombinesTextAndReferenceAudio() throws {
+        let tokenizer = MossFakeTokenizer()
+        let config = try makeTinyMossConfig()
+        let model = MossTTSNanoModel(config: config)
+        let promptCodes = MLXArray([Int32(1), Int32(2), Int32(3), Int32(4)], [2, 2])
+
+        let prepared = try model.buildInferenceInputIDs(
+            text: "target",
+            tokenizer: tokenizer,
+            promptAudioCodes: promptCodes
+        )
+
+        #expect(prepared.inputIDs.ndim == 3)
+        #expect(prepared.inputIDs.dim(0) == 1)
+        #expect(prepared.inputIDs.dim(2) == config.nVQ + 1)
+        #expect(prepared.attentionMask.shape == [1, prepared.inputIDs.dim(1)])
+    }
+
+    @Test func samplingRestrictsAssistantTextCandidates() throws {
+        var values = Array(repeating: Float(-10), count: 16)
+        values[9] = 3
+        values[7] = 1
+        let logits = MLXArray(values, [1, 16])
+
+        let next = try mossSampleAssistantTextToken(
+            textLogits: logits,
+            audioAssistantSlotTokenID: 9,
+            audioEndTokenID: 7,
+            doSample: false,
+            temperature: 1,
+            topK: 50,
+            topP: 1
+        )
+        #expect(next.asArray(Int32.self) == [9])
+    }
+
+    @Test func samplingAppliesRepetitionPenaltyAndTopK() {
+        let logits = MLXArray([Float(0), Float(2), Float(-2), Float(1)], [1, 4])
+        let penalized = mossApplyRepetitionPenalty(
+            logits: logits,
+            previousTokenIDs: MLXArray([Int32(1), Int32(2)]),
+            penalty: 2
+        ).asArray(Float.self)
+        #expect(abs(penalized[1] - 1) < 0.0001)
+        #expect(abs(penalized[2] + 4) < 0.0001)
+
+        let topK = mossApplyTopK(logits, topK: 2).asArray(Float.self)
+        #expect(topK[0].isInfinite && topK[0] < 0)
+        #expect(topK[1] == 2)
+        #expect(topK[2].isInfinite && topK[2] < 0)
+        #expect(topK[3] == 1)
+    }
+
+    @Test func samplingTopPMatchesPythonTailMask() {
+        let logits = MLXArray(
+            [0.55, 0.25, 0.15, 0.05].map { Float(log($0)) },
+            [1, 4]
+        )
+        let topP = mossApplyTopP(logits, topP: 0.79).asArray(Float.self)
+        #expect(topP[0].isFinite)
+        #expect(topP[1].isFinite)
+        #expect(topP[2].isInfinite && topP[2] < 0)
+        #expect(topP[3].isInfinite && topP[3] < 0)
+    }
+
+    @Test func defaultSamplingParametersMatchPythonCLIForMoss() throws {
+        let model = MossTTSNanoModel(config: try makeTinyMossConfig())
+        #expect(model.defaultGenerationParameters.temperature == 0.7)
+        #expect(model.defaultGenerationParameters.topP == 0.9)
+        #expect(model.defaultGenerationParameters.topK == 50)
+        #expect(model.defaultGenerationParameters.repetitionPenalty == 1.1)
+    }
+
+    @Test func sanitizeDropsUnusedUpstreamHeads() throws {
+        let model = MossTTSNanoModel(config: try makeTinyMossConfig())
+        let tensor = MLXArray.zeros([1], dtype: .float32)
+        let sanitized = model.sanitize(weights: [
+            "text_lm_head.weight": tensor,
+            "audio_lm_heads.0.weight": tensor,
+            "local_transformer.wte.weight": tensor,
+            "transformer.wte.weight": tensor,
+        ])
+
+        #expect(sanitized["text_lm_head.weight"] == nil)
+        #expect(sanitized["audio_lm_heads.0.weight"] == nil)
+        #expect(sanitized["local_transformer.wte.weight"] == nil)
+        #expect(sanitized["transformer.wte.weight"] != nil)
+    }
+
+    @Test func audioTokenizerConfigAndEmptyDecodePath() throws {
+        let directory = try makeTemporaryArtifactDirectory(prefix: "tiny-moss-audio-tokenizer")
+        defer { cleanupTemporaryArtifactDirectory(directory) }
+        let configJSON = """
+        {
+          "sample_rate": 48000,
+          "sampling_rate": 48000,
+          "downsample_rate": 4,
+          "number_channels": 2,
+          "enable_channel_interleave": true,
+          "encoder_kwargs": [
+            { "module_type": "PatchedPretransform", "patch_size": 2 }
+          ],
+          "decoder_kwargs": [
+            { "module_type": "PatchedPretransform", "patch_size": 2 }
+          ],
+          "quantizer_type": "rlfq",
+          "quantizer_kwargs": {
+            "input_dim": 2,
+            "rvq_dim": 2,
+            "output_dim": 2,
+            "num_quantizers": 1,
+            "codebook_size": 4,
+            "codebook_dim": 2
+          }
+        }
+        """
+        try writeTestFile(directory.appendingPathComponent("config.json"), contents: configJSON)
+        let parsed = try MossAudioTokenizerConfig.fromFile(directory.appendingPathComponent("config.json"))
+        #expect(parsed.numberChannels == 2)
+        #expect(parsed.encoderKwargs.count == 1)
+
+        let tokenizer = try MLXMossAudioTokenizer(config: parsed)
+        #expect(tokenizer.numQuantizers == 1)
+        let empty = try tokenizer.decodeAudioCodes(MLXArray.zeros([0, 1], type: Int32.self), numQuantizers: 1)
+        #expect(empty.shape == [0, 2])
+    }
+
+    @Test func ttsModelResolutionIncludesMossNano() {
+        #expect(TTS.resolveModelType(modelRepo: "mlx-community/MOSS-TTS-Nano") == "moss_tts_nano")
+        #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "moss_tts_nano") == "moss_tts_nano")
+    }
+}
+
 private func makeTinyQwenTokenizerDirectory() throws -> URL {
     let directory = try makeTemporaryArtifactDirectory(prefix: "tiny-qwen3-tokenizer")
 

@@ -9,6 +9,11 @@ enum SentencePiecePieceType: Int {
     case byte = 6
 }
 
+enum SentencePieceModelType: Int {
+    case unigram = 1
+    case bpe = 2
+}
+
 enum SentencePieceModelError: Error, CustomStringConvertible {
     case malformedVarint
     case truncatedField
@@ -100,10 +105,15 @@ struct SentencePieceProtobufReader {
 }
 
 struct SentencePieceModelParser {
-    static func parsePieces(from data: Data) throws -> (pieces: [SentencePieceToken], unknownTokenId: Int) {
+    static func parsePieces(from data: Data) throws -> (
+        pieces: [SentencePieceToken],
+        unknownTokenId: Int,
+        modelType: SentencePieceModelType
+    ) {
         var reader = SentencePieceProtobufReader(data)
         var pieces: [SentencePieceToken] = []
         var unknownTokenId: Int?
+        var modelType: SentencePieceModelType = .unigram
 
         while !reader.isAtEnd {
             let key = try reader.readVarint()
@@ -118,6 +128,9 @@ struct SentencePieceModelParser {
                     }
                     pieces.append(piece)
                 }
+            } else if fieldNumber == 2, wireType == 2 {
+                let trainerSpecData = try reader.readLengthDelimited()
+                modelType = try parseTrainerSpecModelType(from: trainerSpecData) ?? modelType
             } else {
                 try reader.skipField(wireType: wireType)
             }
@@ -130,7 +143,7 @@ struct SentencePieceModelParser {
         let resolvedUnknownId = unknownTokenId
             ?? pieces.firstIndex(where: { $0.token == "<unk>" })
             ?? 0
-        return (pieces, resolvedUnknownId)
+        return (pieces, resolvedUnknownId, modelType)
     }
 
     private static func parsePiece(from data: Data) throws -> SentencePieceToken? {
@@ -160,6 +173,21 @@ struct SentencePieceModelParser {
 
         guard let token else { return nil }
         return SentencePieceToken(token: token, score: score, type: type)
+    }
+
+    private static func parseTrainerSpecModelType(from data: Data) throws -> SentencePieceModelType? {
+        var reader = SentencePieceProtobufReader(data)
+        while !reader.isAtEnd {
+            let key = try reader.readVarint()
+            let fieldNumber = Int(key >> 3)
+            let wireType = key & 0x7
+
+            if fieldNumber == 3, wireType == 0 {
+                return SentencePieceModelType(rawValue: Int(try reader.readVarint()))
+            }
+            try reader.skipField(wireType: wireType)
+        }
+        return nil
     }
 }
 
@@ -349,16 +377,22 @@ enum TokenizerError: Error, CustomStringConvertible {
     }
 }
 
-public final class UnigramTokenizer {
+public final class SentencePieceTokenizer {
     let vocab: [SentencePieceToken]
     let unknownTokenId: Int
     let unknownTokenScore: Float
+    let modelType: SentencePieceModelType
     let tokensToIds: [String: Int]
     let trie: Trie
 
-    private init(vocab: [SentencePieceToken], unknownTokenId: Int) {
+    private init(
+        vocab: [SentencePieceToken],
+        unknownTokenId: Int,
+        modelType: SentencePieceModelType = .unigram
+    ) {
         self.vocab = vocab
         self.unknownTokenId = unknownTokenId
+        self.modelType = modelType
         let minScore = vocab.reduce(Float.greatestFiniteMagnitude) { min($0, $1.score) }
         self.unknownTokenScore = minScore - 10
 
@@ -395,7 +429,14 @@ public final class UnigramTokenizer {
             pieces.append(SentencePieceToken(token: token, score: Float(score)))
         }
 
-        self.init(vocab: pieces, unknownTokenId: unkId)
+        let modelType: SentencePieceModelType
+        if let type = model["type"] as? String, type.uppercased() == "BPE" {
+            modelType = .bpe
+        } else {
+            modelType = .unigram
+        }
+
+        self.init(vocab: pieces, unknownTokenId: unkId, modelType: modelType)
     }
 
     public convenience init(tokenizerJSONData: Data) throws {
@@ -405,18 +446,26 @@ public final class UnigramTokenizer {
 
     public convenience init(sentencePieceModelData: Data) throws {
         let parsed = try SentencePieceModelParser.parsePieces(from: sentencePieceModelData)
-        self.init(vocab: parsed.pieces, unknownTokenId: parsed.unknownTokenId)
+        self.init(
+            vocab: parsed.pieces,
+            unknownTokenId: parsed.unknownTokenId,
+            modelType: parsed.modelType
+        )
     }
 
-    public static func from(tokenizerJSONURL: URL) throws -> UnigramTokenizer {
-        try UnigramTokenizer(tokenizerJSONData: Data(contentsOf: tokenizerJSONURL))
+    public static func from(tokenizerJSONURL: URL) throws -> SentencePieceTokenizer {
+        try SentencePieceTokenizer(tokenizerJSONData: Data(contentsOf: tokenizerJSONURL))
     }
 
-    public static func from(sentencePieceModelURL: URL) throws -> UnigramTokenizer {
-        try UnigramTokenizer(sentencePieceModelData: Data(contentsOf: sentencePieceModelURL))
+    public static func from(sentencePieceModelURL: URL) throws -> SentencePieceTokenizer {
+        try SentencePieceTokenizer(sentencePieceModelData: Data(contentsOf: sentencePieceModelURL))
     }
 
     public func encodeWithByteFallback(_ text: String) -> [Int] {
+        if modelType == .bpe {
+            return encodeBPEWithByteFallback(text)
+        }
+
         let pre = applyMetaspace(text)
         var lattice = TokenLattice(sentence: pre, bosTokenId: unknownTokenId, eosTokenId: unknownTokenId)
 
@@ -457,6 +506,44 @@ public final class UnigramTokenizer {
                 }
             } else {
                 ids.append(node.tokenId)
+            }
+        }
+        return ids
+    }
+
+    private func encodeBPEWithByteFallback(_ text: String) -> [Int] {
+        let pre = applyMetaspace(text)
+        var symbols = initialBPESymbols(pre)
+
+        while symbols.count > 1 {
+            var bestIndex: Int?
+            var bestPiece = ""
+            var bestScore = -Float.infinity
+
+            for index in 0 ..< symbols.count - 1 {
+                let candidate = symbols[index] + symbols[index + 1]
+                guard let tokenId = tokensToIds[candidate] else { continue }
+                let token = vocab[tokenId]
+                guard token.type == .normal || token.type == .userDefined else { continue }
+                if bestIndex == nil || token.score > bestScore {
+                    bestIndex = index
+                    bestPiece = candidate
+                    bestScore = token.score
+                }
+            }
+
+            guard let index = bestIndex else { break }
+            symbols.replaceSubrange(index ... index + 1, with: [bestPiece])
+        }
+
+        var ids: [Int] = []
+        for symbol in symbols {
+            if let tokenId = tokensToIds[symbol] {
+                ids.append(tokenId)
+            } else {
+                for byte in symbol.utf8 {
+                    ids.append(byteMap[byte] ?? unknownTokenId)
+                }
             }
         }
         return ids
@@ -509,8 +596,34 @@ public final class UnigramTokenizer {
         return map
     }()
 
+    private lazy var bpeAtomicPieces: [String] = vocab
+        .filter { $0.type == .userDefined }
+        .map(\.token)
+        .sorted { $0.count > $1.count }
+
+    private func initialBPESymbols(_ text: String) -> [String] {
+        var symbols: [String] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            if let atomicPiece = bpeAtomicPieces.first(where: { text[index...].hasPrefix($0) }) {
+                symbols.append(atomicPiece)
+                index = text.index(index, offsetBy: atomicPiece.count)
+            } else {
+                let nextIndex = text.index(after: index)
+                symbols.append(String(text[index ..< nextIndex]))
+                index = nextIndex
+            }
+        }
+
+        return symbols
+    }
+
     private func applyMetaspace(_ text: String) -> String {
         let replaced = text.replacingOccurrences(of: " ", with: "▁")
         return "▁" + replaced
     }
 }
+
+@available(*, deprecated, renamed: "SentencePieceTokenizer")
+public typealias UnigramTokenizer = SentencePieceTokenizer
