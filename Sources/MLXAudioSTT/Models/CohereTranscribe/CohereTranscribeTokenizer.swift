@@ -3,7 +3,7 @@ import MLXAudioCore
 import MLXLMCommon
 
 public final class CohereTranscribeTokenizer {
-    private let tokenizer: UnigramTokenizer
+    private let tokenizer: SentencePieceTokenizer
     private let specialTokenToID: [String: Int]
     private let specialIDs: Set<Int>
 
@@ -11,7 +11,7 @@ public final class CohereTranscribeTokenizer {
         let tokenizerURL = modelDir.appendingPathComponent("tokenizer.model")
         let tokenizerConfigURL = modelDir.appendingPathComponent("tokenizer_config.json")
 
-        self.tokenizer = try UnigramTokenizer.from(sentencePieceModelURL: tokenizerURL)
+        self.tokenizer = try SentencePieceTokenizer.from(sentencePieceModelURL: tokenizerURL)
 
         let configData = try Data(contentsOf: tokenizerConfigURL)
         let parsed = try JSONDecoder().decode(CohereTokenizerConfig.self, from: configData)

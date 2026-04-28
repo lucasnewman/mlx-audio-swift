@@ -2,7 +2,7 @@ import Foundation
 import MLXAudioCore
 
 struct SenseVoiceTokenizer {
-    let tokenizer: UnigramTokenizer?
+    let tokenizer: SentencePieceTokenizer?
     let tokenList: [String]?
 
     init(modelDirectory: URL) throws {
@@ -18,9 +18,9 @@ struct SenseVoiceTokenizer {
         let tokensURL = modelDirectory.appendingPathComponent("tokens.json")
 
         if FileManager.default.fileExists(atPath: tokenizerURL.path) {
-            self.tokenizer = try UnigramTokenizer.from(tokenizerJSONURL: tokenizerURL)
+            self.tokenizer = try SentencePieceTokenizer.from(tokenizerJSONURL: tokenizerURL)
         } else if let sentencePieceURL {
-            self.tokenizer = try UnigramTokenizer.from(sentencePieceModelURL: sentencePieceURL)
+            self.tokenizer = try SentencePieceTokenizer.from(sentencePieceModelURL: sentencePieceURL)
         } else {
             self.tokenizer = nil
         }

@@ -9,6 +9,8 @@ import MLXLMCommon
 enum AppError: Error, LocalizedError, CustomStringConvertible {
     case invalidRepositoryID(String)
     case unsupportedModelType(String?)
+    case invalidGeneratedAudioShape([Int])
+    case mismatchedAudioChannelCount(Int, Int)
     case failedToCreateAudioBuffer
     case failedToAccessAudioBufferData
 
@@ -22,6 +24,10 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "Invalid repository ID: \(model)"
         case .unsupportedModelType(let modelType):
             "Unsupported model type: \(String(describing: modelType))"
+        case .invalidGeneratedAudioShape(let shape):
+            "Invalid generated audio shape: \(shape)"
+        case .mismatchedAudioChannelCount(let expected, let actual):
+            "Mismatched generated audio channel count: expected \(expected), got \(actual)"
         case .failedToCreateAudioBuffer:
             "Failed to create audio buffer"
         case .failedToAccessAudioBufferData:
@@ -117,7 +123,7 @@ enum App {
             generationParameters.topP = topP
         }
 
-        let audioData: [Float]
+        let audioFrames: PCMFrames
         var benchmarkMetrics: BenchmarkMetrics?
         if benchmark {
             let sampleRate = Double(loadedModel.sampleRate)
@@ -131,8 +137,8 @@ enum App {
                 streamingInterval: 0.32
             )
 
-            var collectedAudio = [Float]()
-            var totalSamples = 0
+            var collectedAudio = PCMFrames()
+            var totalFrames = 0
             var firstChunkLatency: TimeInterval?
             var generationInfo: AudioGenerationInfo?
 
@@ -143,8 +149,8 @@ enum App {
                 case .info(let info):
                     generationInfo = info
                 case .audio(let chunk):
-                    let chunkSamples = chunk.asArray(Float.self)
-                    guard !chunkSamples.isEmpty else { continue }
+                    let chunkFrames = try PCMFrames(audio: chunk)
+                    guard chunkFrames.frameCount > 0 else { continue }
 
                     let now = CFAbsoluteTimeGetCurrent()
                     let chunkLatency = now - started
@@ -152,14 +158,14 @@ enum App {
                         firstChunkLatency = chunkLatency
                     }
 
-                    collectedAudio.append(contentsOf: chunkSamples)
-                    totalSamples += chunkSamples.count
+                    try collectedAudio.append(chunkFrames)
+                    totalFrames += chunkFrames.frameCount
                 }
             }
 
-            audioData = collectedAudio
+            audioFrames = collectedAudio
             let elapsed = CFAbsoluteTimeGetCurrent() - started
-            let audioDuration = sampleRate > 0 ? Double(totalSamples) / sampleRate : 0
+            let audioDuration = sampleRate > 0 ? Double(totalFrames) / sampleRate : 0
             benchmarkMetrics = BenchmarkMetrics(
                 elapsed: elapsed,
                 audioDuration: audioDuration,
@@ -168,21 +174,22 @@ enum App {
                 generationInfo: generationInfo
             )
         } else {
-            audioData = try await loadedModel.generate(
+            let audio = try await loadedModel.generate(
                 text: text,
                 voice: voice,
                 refAudio: refAudio,
                 refText: refText,
                 language: language,
                 generationParameters: generationParameters
-            ).asArray(Float.self)
+            )
+            audioFrames = try PCMFrames(audio: audio)
         }
 
         print(String(format: "Finished generation in %0.2fs", CFAbsoluteTimeGetCurrent() - started))
 
         let outputURL = makeOutputURL(outputPath: outputPath)
         let sampleRate = Double(loadedModel.sampleRate)
-        try writeWavFile(samples: audioData, sampleRate: sampleRate, outputURL: outputURL)
+        try writeWavFile(audioFrames: audioFrames, sampleRate: sampleRate, outputURL: outputURL)
         print("Wrote WAV to \(outputURL.path)")
 
         if let benchmarkMetrics {
@@ -208,7 +215,7 @@ enum App {
             print("Loading forced aligner (\(forcedAlignerRepo))")
             let forcedAligner = try await Qwen3ForcedAlignerModel.fromPretrained(forcedAlignerRepo)
             let alignmentAudio = try resampleAudio(
-                MLXArray(audioData),
+                MLXArray(audioFrames.monoSamples()),
                 from: Int(loadedModel.sampleRate),
                 to: 16000
             )
@@ -241,6 +248,98 @@ enum App {
         let generationInfo: AudioGenerationInfo?
     }
 
+    private struct PCMFrames {
+        var channels: [[Float]]
+
+        init(channels: [[Float]] = []) {
+            self.channels = channels
+        }
+
+        init(audio: MLXArray) throws {
+            var audio = audio.asType(.float32)
+            if audio.ndim == 3 {
+                guard audio.dim(0) == 1 else {
+                    throw AppError.invalidGeneratedAudioShape(audio.shape)
+                }
+                audio = audio[0]
+            }
+
+            switch audio.ndim {
+            case 1:
+                self.channels = [audio.asArray(Float.self)]
+            case 2:
+                let first = audio.dim(0)
+                let second = audio.dim(1)
+                let values = audio.asArray(Float.self)
+                if second <= 8 {
+                    self.channels = Self.channelsFromSampleMajor(values: values, frameCount: first, channelCount: second)
+                } else if first <= 8 {
+                    self.channels = (0 ..< first).map { channel in
+                        let start = channel * second
+                        return Array(values[start ..< (start + second)])
+                    }
+                } else {
+                    throw AppError.invalidGeneratedAudioShape(audio.shape)
+                }
+            default:
+                throw AppError.invalidGeneratedAudioShape(audio.shape)
+            }
+        }
+
+        var channelCount: Int {
+            channels.count
+        }
+
+        var frameCount: Int {
+            channels.first?.count ?? 0
+        }
+
+        mutating func append(_ other: PCMFrames) throws {
+            guard !channels.isEmpty else {
+                channels = other.channels
+                return
+            }
+            guard other.channelCount == channelCount else {
+                throw AppError.mismatchedAudioChannelCount(channelCount, other.channelCount)
+            }
+            for index in channels.indices {
+                channels[index].append(contentsOf: other.channels[index])
+            }
+        }
+
+        func monoSamples() -> [Float] {
+            guard channelCount > 1 else {
+                return channels.first ?? []
+            }
+            var samples = Array(repeating: Float(0), count: frameCount)
+            for frame in 0 ..< frameCount {
+                var sum: Float = 0
+                for channel in 0 ..< channelCount {
+                    sum += channels[channel][frame]
+                }
+                samples[frame] = sum / Float(channelCount)
+            }
+            return samples
+        }
+
+        private static func channelsFromSampleMajor(
+            values: [Float],
+            frameCount: Int,
+            channelCount: Int
+        ) -> [[Float]] {
+            var channels = Array(
+                repeating: Array(repeating: Float(0), count: frameCount),
+                count: channelCount
+            )
+            for frame in 0 ..< frameCount {
+                for channel in 0 ..< channelCount {
+                    channels[channel][frame] = values[frame * channelCount + channel]
+                }
+            }
+            return channels
+        }
+    }
+
     private static func makeOutputURL(outputPath: String?) -> URL {
         let outputName = outputPath?.isEmpty == false ? outputPath! : "output.wav"
         if outputName.hasPrefix("/") {
@@ -258,20 +357,40 @@ enum App {
             .appendingPathComponent(path)
     }
 
-    private static func writeWavFile(samples: [Float], sampleRate: Double, outputURL: URL) throws {
-        let frameCount = AVAudioFrameCount(samples.count)
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+    private static func writeWavFile(audioFrames: PCMFrames, sampleRate: Double, outputURL: URL) throws {
+        let channelCount = audioFrames.channelCount
+        guard channelCount > 0 else {
+            throw AppError.invalidGeneratedAudioShape([audioFrames.frameCount, channelCount])
+        }
+        let frameCount = AVAudioFrameCount(audioFrames.frameCount)
+        guard let bufferFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: false
+        ), let fileFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: true
+        ), let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: frameCount) else {
             throw AppError.failedToCreateAudioBuffer
         }
         buffer.frameLength = frameCount
         guard let channelData = buffer.floatChannelData else {
             throw AppError.failedToAccessAudioBufferData
         }
-        for i in 0 ..< samples.count {
-            channelData[0][i] = samples[i]
+        for channel in 0 ..< channelCount {
+            for frame in 0 ..< audioFrames.frameCount {
+                channelData[channel][frame] = audioFrames.channels[channel][frame]
+            }
         }
-        let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+        let audioFile = try AVAudioFile(
+            forWriting: outputURL,
+            settings: fileFormat.settings,
+            commonFormat: bufferFormat.commonFormat,
+            interleaved: bufferFormat.isInterleaved
+        )
         try audioFile.write(from: buffer)
     }
 

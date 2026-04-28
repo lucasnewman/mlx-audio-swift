@@ -51,6 +51,8 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "moss_tts_nano":
+            return try await MossTTSNanoModel.fromPretrained(modelRepo, cache: cache)
         case "echo_tts", "echo":
             return try await EchoTTSModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_tts":
@@ -105,6 +107,9 @@ public enum TTS {
         }
         if lower.contains("echo") {
             return "echo_tts"
+        }
+        if lower.contains("moss") && lower.contains("tts") {
+            return "moss_tts_nano"
         }
         if lower.contains("qwen3") || lower.contains("qwen") {
             return "qwen3"
