@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo).
+            "Unsupported STT model repo: \(repo)."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
