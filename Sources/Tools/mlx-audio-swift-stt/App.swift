@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, Canary, Wav2Vec2/MMS, LASR CTC, Moonshine, or Qwen3ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -222,7 +222,7 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
+                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Canary, Wav2Vec2/MMS, LASR CTC, Moonshine, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -412,6 +412,18 @@ enum App {
         }
         if lower.contains("parakeet") {
             return .stt(try await ParakeetModel.fromPretrained(repo))
+        }
+        if lower.contains("canary") {
+            return .stt(try await CanaryModel.fromPretrained(repo))
+        }
+        if lower.contains("wav2vec") || lower.contains("wav2vec2") || lower.contains("/mms-") || lower.contains("mms_") || lower.contains("mms-") {
+            return .stt(try await Wav2Vec2CTCModel.fromPretrained(repo))
+        }
+        if lower.contains("lasr") {
+            return .stt(try await LasrCTCModel.fromPretrained(repo))
+        }
+        if lower.contains("moonshine") {
+            return .stt(try await MoonshineModel.fromPretrained(repo))
         }
         if lower.contains("nemotron") {
             return .stt(try await NemotronASRModel.fromPretrained(repo))
