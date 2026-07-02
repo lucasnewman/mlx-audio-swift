@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, Whisper, or Qwen3ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -222,7 +222,7 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
+                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Whisper, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -363,6 +363,23 @@ enum App {
         audio: MLXArray,
         parameters: STTGenerateParameters
     ) async throws -> STTOutput {
+        // Voxtral Realtime has a true online streaming session — feed audio as it
+        // arrives (480 ms chunks ~ the model's native transcription delay) instead of
+        // the whole-buffer `generateStream`.
+        if let voxtral = model as? VoxtralRealtimeModel {
+            return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
+        }
+        // Nemotron has a true online session — feed audio as it arrives instead of the
+        // whole-buffer generateStream. The chunked-feed logic lives in the model. The
+        // session needs NA (frozen) mel normalization; for per-utterance normalization
+        // fall through to the generic stream instead of aborting on its precondition.
+        if let nemotron = model as? NemotronASRModel {
+            let norm = nemotron.preprocessConfig.normalize.lowercased()
+            if norm == "na" || norm == "none" {
+                return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
+            }
+        }
+
         var finalOutput: STTOutput?
         var streamedText = ""
         var emittedToken = false
@@ -390,6 +407,42 @@ enum App {
         }
 
         return STTOutput(text: streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Drive Voxtral's streaming transcription from a file, printing each delta live.
+    /// The chunked-feed logic lives in `VoxtralRealtimeModel.transcribeStreaming` so other
+    /// callers can reuse it; the CLI only renders the deltas.
+    private static func runVoxtralStreaming(
+        model: VoxtralRealtimeModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        var emitted = false
+        let output = model.transcribeStreaming(audio: audio, generationParameters: parameters) { delta in
+            emitted = true
+            print(delta, terminator: "")
+            fflush(stdout)
+        }
+        if emitted { print() }
+        return output
+    }
+
+    /// Drive Nemotron's streaming transcription from a file, printing each delta live.
+    /// The chunked-feed logic lives in `NemotronASRModel.transcribeStreaming` so other
+    /// callers can reuse it; the CLI only renders the deltas.
+    private static func runNemotronStreaming(
+        model: NemotronASRModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        var emitted = false
+        let output = model.transcribeStreaming(audio: audio, generationParameters: parameters) { delta in
+            emitted = true
+            print(delta, terminator: "")
+            fflush(stdout)
+        }
+        if emitted { print() }
+        return output
     }
 
     private static func loadModel(repo: String) async throws -> LoadedModel {
@@ -421,6 +474,9 @@ enum App {
         }
         if lower.contains("sensevoice") {
             return .stt(try await SenseVoiceModel.fromPretrained(repo))
+        }
+        if lower.contains("whisper") {
+            return .stt(try await WhisperModel.fromPretrained(repo))
         }
 
         throw AppError.unsupportedModelRepo(repo)
