@@ -13,10 +13,10 @@ A modular Swift SDK for audio processing with MLX on Apple Silicon
 MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
-- **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE)
+- **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav)
 - **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, OmniVoice, Fish Audio S2 Pro, Soprano, VyvoTTS, Orpheus, MOSS-TTS, Marvis TTS, Pocket TTS, Irodori TTS)
-- **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Voxtral Realtime, Cohere Transcribe, Parakeet, Nemotron ASR, GLMASR)
-- **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn)
+- **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Qwen3-ForcedAligner, Voxtral Realtime, Cohere Transcribe, Parakeet, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
+- **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn, FSMN VAD, Silero VAD)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
 
@@ -140,7 +140,30 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Parakeet | [Parakeet README](Sources/MLXAudioSTT/Models/Parakeet/README.md) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | Nemotron ASR | [Nemotron ASR README](Sources/MLXAudioSTT/Models/NemotronASR/README.md) | [mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit) |
 | GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
+| FireRedASR2 | [FireRedASR2 README](Sources/MLXAudioSTT/Models/FireRedASR2/README.md) | Converted FireRedASR2-compatible MLX checkpoints |
+| SenseVoice | [SenseVoice README](Sources/MLXAudioSTT/Models/SenseVoice/README.md) | Converted SenseVoice-compatible MLX checkpoints |
+| Granite Speech | [Granite Speech README](Sources/MLXAudioSTT/Models/GraniteSpeech/README.md) | Converted Granite Speech-compatible MLX checkpoints |
 | Whisper | [Whisper README](Sources/MLXAudioSTT/Models/Whisper/README.md) | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo), [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo), and every other [openai/whisper-\*](https://huggingface.co/openai) / [mlx-community/whisper-\*](https://huggingface.co/mlx-community) size and `.en` variant |
+| Canary | — | [Mediform/canary-1b-v2-mlx-q8](https://huggingface.co/Mediform/canary-1b-v2-mlx-q8), Canary-compatible MLX/NeMo checkpoints |
+| Moonshine | — | [UsefulSensors/moonshine-tiny](https://huggingface.co/UsefulSensors/moonshine-tiny), Moonshine-compatible MLX checkpoints |
+| Wav2Vec2 CTC | — | [facebook/wav2vec2-base-960h](https://huggingface.co/facebook/wav2vec2-base-960h), Wav2Vec2 CTC-compatible checkpoints |
+| MMS | — | [facebook/mms-1b-fl102](https://huggingface.co/facebook/mms-1b-fl102), MMS adapter checkpoints |
+
+### Audio Codecs
+
+| Codec | Notes | HuggingFace Repo |
+|-------|-------|------------------|
+| SNAC | Neural audio codec with encode/decode support | [mlx-community/snac_24khz](https://huggingface.co/mlx-community/snac_24khz) |
+| Encodec | Encodec-compatible audio codec runtime | Converted Encodec-compatible MLX checkpoints |
+| Vocos | Vocoder/codec decode components | Converted Vocos-compatible MLX checkpoints |
+| Mimi | Mimi encoder/decoder codec used by speech models | Mimi-compatible MLX checkpoints |
+| DACVAE | DAC-style VAE audio codec | Converted DACVAE-compatible MLX checkpoints |
+| Descript DAC | Descript DAC-compatible audio codec | Descript DAC-compatible checkpoints |
+| Fish S1 DAC | Fish Speech S1 audio codec | Fish S1 DAC-compatible checkpoints |
+| S3TokenizerV2 | S3 acoustic tokenizer exposed in `MLXAudioCodecs` | [mlx-community/S3TokenizerV2](https://huggingface.co/mlx-community/S3TokenizerV2) |
+| MOSS Audio Tokenizer | MOSS audio tokenizer runtime shared with MOSS TTS models | [mlx-community/MOSS-Audio-Tokenizer-Nano](https://huggingface.co/mlx-community/MOSS-Audio-Tokenizer-Nano) |
+| Higgs Audio Tokenizer | Higgs acoustic tokenizer decode and acoustic encode support | [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) bundled tokenizer weights |
+| Step-Audio-2 Token2Wav | Token-to-waveform stack for Step-Audio-2 style prompts | [mlx-community/Step-Audio-2-token2wav](https://huggingface.co/mlx-community/Step-Audio-2-token2wav) |
 
 ### STS Models
 
@@ -157,6 +180,8 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 |-------|--------------|------------------|
 | Sortformer | [Sortformer README](Sources/MLXAudioVAD/Models/Sortformer/README.md) | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16) |
 | SmartTurn | [SmartTurn README](Sources/MLXAudioVAD/Models/SmartTurn/README.md) | [mlx-community/smart-turn-v3](https://huggingface.co/mlx-community/smart-turn-v3) |
+| FSMN VAD | — | [mlx-community/fsmn-vad](https://huggingface.co/mlx-community/fsmn-vad) |
+| Silero VAD | [Silero VAD README](Sources/MLXAudioVAD/Models/SileroVAD/README.md) | Silero VAD-compatible MLX checkpoints |
 
 ## Features
 

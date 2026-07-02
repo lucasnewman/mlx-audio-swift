@@ -80,7 +80,7 @@ struct FSMNVADNetworkTests {
 
         let repo = env["MLXAUDIO_FSMNVAD_REPO"] ?? FSMNVAD.defaultRepository
         let model = try await FSMNVAD.fromPretrained(repo)
-        let values = (0..<(6 * 400)).map { Float(($0 % 101) - 50) / 50.0 }
+        let values = moduloFloatFixtureValues(count: 6 * 400, modulus: 101, subtracting: 50, divisor: 50.0)
         let features = MLXArray(values, [1, 6, 400])
         let scores = model(features)
         eval(scores)
@@ -118,7 +118,7 @@ struct FSMNVADNetworkTests {
 
         let repo = env["MLXAUDIO_FSMNVAD_REPO"] ?? FSMNVAD.defaultRepository
         let model = try await FSMNVAD.fromPretrained(repo)
-        let waveform = MLXArray((0..<16_000).map { Float(($0 % 97) - 48) / 96.0 })
+        let waveform = MLXArray(moduloFloatFixtureValues(count: 16_000, modulus: 97, subtracting: 48, divisor: 96.0))
         let features = try model.extractFeatures(waveform, sampleRate: 16_000)
         eval(features)
 
