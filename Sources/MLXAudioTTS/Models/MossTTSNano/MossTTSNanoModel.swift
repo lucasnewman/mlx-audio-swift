@@ -1,14 +1,10 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
+import MLXAudioCodecs
 import MLXAudioCore
 @preconcurrency import MLXLMCommon
 import MLXNN
-
-public protocol MossAudioTokenizing: AnyObject {
-    func encodeAudio(_ audio: MLXArray, numQuantizers: Int) throws -> MLXArray
-    func decodeAudioCodes(_ audioTokenIDs: MLXArray, numQuantizers: Int) throws -> MLXArray
-}
 
 public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked Sendable {
     public let config: MossTTSNanoConfig

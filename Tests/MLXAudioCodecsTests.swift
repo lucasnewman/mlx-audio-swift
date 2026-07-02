@@ -79,6 +79,31 @@ struct SharedDSPTests {
     }
 }
 
+struct S3TokenizerTests {
+
+    @Test func smallConfigQuantizesMelToSpeechTokens() throws {
+        var config = S3TokenizerConfig()
+        config.nMels = 4
+        config.nAudioState = 16
+        config.nAudioHead = 4
+        config.nAudioLayer = 1
+        config.nCodebookSize = 6_561
+
+        let model = S3TokenizerV2(config: config)
+        let mel = MLXRandom.normal([1, config.nMels, 16])
+        let melLen = MLXArray([Int32(16)])
+
+        let (tokens, tokenLens) = model.quantize(mel, melLen: melLen)
+        eval(tokens, tokenLens)
+
+        #expect(tokens.shape == [1, 4])
+        #expect(tokenLens.asArray(Int32.self) == [4])
+
+        let values = tokens.asArray(Int32.self)
+        #expect(values.allSatisfy { $0 >= 0 && $0 < Int32(config.nCodebookSize) })
+    }
+}
+
 
 // MARK: - Vocos Tests
 // Run Vocos tests with:  xcodebuild test \
@@ -1010,6 +1035,56 @@ struct FishS1DACTests {
 
 @Suite("Codec Network Tests", .serialized)
 struct CodecNetworkTests {
+
+    @Test func s3TokenizerFromPretrainedMatchesPythonReferenceTokens() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network S3Tokenizer test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_S3_TOKENIZER_REPO"] ?? S3TokenizerV2.defaultRepository
+        let model = try await S3TokenizerV2.fromPretrained(repo)
+        let audio = MLXArray((0..<16_000).map { Float(($0 % 97) - 48) / 480.0 })
+        let mel = s3TokenizerLogMelSpectrogram(audio)
+        let melLen = MLXArray([Int32(mel.dim(1))])
+
+        let (tokens, tokenLens) = model.quantize(mel.expandedDimensions(axis: 0), melLen: melLen)
+        eval(tokens, tokenLens)
+
+        let expectedTokens: [Int32] = [
+            365, 4252, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255,
+            4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255, 4255,
+            4254, 1092,
+        ]
+
+        #expect(tokenLens.asArray(Int32.self) == [Int32(expectedTokens.count)])
+        #expect(tokens[0, 0..<expectedTokens.count].asArray(Int32.self) == expectedTokens)
+    }
+
+    @Test func mossAudioTokenizerFromPretrainedMatchesPythonReferenceCodes() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Moss audio tokenizer test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_MOSS_AUDIO_TOKENIZER_REPO"] ?? mossDefaultAudioTokenizerRepo
+        let model = try await MLXMossAudioTokenizer.fromPretrained(repo)
+        let samples = (0..<3_840).flatMap { index -> [Float] in
+            [
+                Float((index % 97) - 48) / 960.0,
+                Float((index % 89) - 44) / 880.0,
+            ]
+        }
+        let audio = MLXArray(samples, [3_840, 2])
+
+        let codes = try model.encodeAudio(audio, numQuantizers: 4)
+        eval(codes)
+
+        #expect(codes.shape == [1, 4])
+        #expect(codes.asArray(Int32.self) == [364, 162, 461, 742])
+    }
 
     @Test func descriptDACFromPretrainedLoadsRealWeightsAndRoundTripsAudio() async throws {
         let env = ProcessInfo.processInfo.environment
