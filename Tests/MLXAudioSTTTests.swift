@@ -3148,7 +3148,7 @@ struct NemotronASRTests {
         }
 
         let model = try tinyModel()
-        let values = (0..<(1 * 40 * 16)).map { Float($0 % 17) / 17.0 }
+        let values = moduloFloatFixtureValues(count: 1 * 40 * 16, modulus: 17, divisor: 17.0)
         let mel = MLXArray(values).reshaped([1, 40, 16])
 
         let encoded = model.encoder(mel, attContextSize: [4, 1])
@@ -3168,9 +3168,7 @@ struct NemotronASRTests {
 
         let model = try tinyModel()
         let sampleCount = 48 * 16
-        let values: [Float] = (0..<sampleCount).map { index in
-            Float((index * 7) % 23) / 23.0
-        }
+        let values = moduloFloatFixtureValues(count: sampleCount, multiplier: 7, modulus: 23, divisor: 23.0)
         let mel = MLXArray(values).reshaped([1, 48, 16])
         let result = model.decode(mel: mel, language: "auto", attContextSize: [4, 1])
 

@@ -255,10 +255,10 @@ struct StepAudio2Token2WavTests {
         let speechTokens = MLXArray([Int32(11), Int32(22)], [1, 2])
         let promptToken = MLXArray([Int32(3), Int32(4)], [1, 2])
         let promptTokenLen = MLXArray([Int32(2)])
-        let promptValues = (0..<(1 * 4 * 80)).map { Float(($0 % 17) - 8) / 200.0 }
+        let promptValues = moduloFloatFixtureValues(count: 1 * 4 * 80, modulus: 17, subtracting: 8, divisor: 200.0)
         let promptFeat = MLXArray(promptValues, [1, 4, 80])
         let promptFeatLen = MLXArray([Int32(4)])
-        let embeddingValues = (0..<192).map { Float(($0 % 19) - 9) / 50.0 }
+        let embeddingValues = moduloFloatFixtureValues(count: 192, modulus: 19, subtracting: 9, divisor: 50.0)
         let embedding = MLXArray(embeddingValues, [1, 192])
         let prompt = StepAudio2Prompt(
             promptToken: promptToken,
@@ -328,7 +328,7 @@ struct StepAudio2Token2WavTests {
 
         let expandedPath = NSString(string: modelPath).expandingTildeInPath
         let model = try StepAudio2Token2Wav.fromModelDirectory(URL(fileURLWithPath: expandedPath))
-        let melValues = (0..<(1 * 80 * 4)).map { Float(($0 % 31) - 15) / 10.0 }
+        let melValues = moduloFloatFixtureValues(count: 1 * 80 * 4, modulus: 31, subtracting: 15, divisor: 10.0)
         let mel = MLXArray(melValues, [1, 80, 4])
 
         MLXRandom.seed(42)
@@ -1300,7 +1300,7 @@ struct CodecNetworkTests {
 
         let repo = env["MLXAUDIO_S3_TOKENIZER_REPO"] ?? S3TokenizerV2.defaultRepository
         let model = try await S3TokenizerV2.fromPretrained(repo)
-        let audio = MLXArray((0..<16_000).map { Float(($0 % 97) - 48) / 480.0 })
+        let audio = MLXArray(moduloFloatFixtureValues(count: 16_000, modulus: 97, subtracting: 48, divisor: 480.0))
         let mel = s3TokenizerLogMelSpectrogram(audio)
         let melLen = MLXArray([Int32(mel.dim(1))])
 
