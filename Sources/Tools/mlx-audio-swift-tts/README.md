@@ -2,6 +2,10 @@
 
 Command-line tool for text-to-speech generation with `MLXAudioTTS` models.
 
+IndexTTS repos or local model directories can be loaded through
+`TTS.loadModel`. IndexTTS uses reference-audio conditioning through its
+Conformer/Perceiver/GPT path plus ECAPA speaker extraction and BigVGAN decode.
+
 ## Build and Run
 
 ```bash
