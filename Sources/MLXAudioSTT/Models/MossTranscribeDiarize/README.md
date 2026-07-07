@@ -1,6 +1,6 @@
 # MOSS-Transcribe-Diarize
 
-Swift port of OpenMOSS MOSS-Transcribe-Diarize, an audio-conditioned Qwen3 decoder with a Whisper encoder for timestamped transcription and speaker labels.
+OpenMOSS MOSS-Transcribe-Diarize is an audio-conditioned Qwen3 decoder with a Whisper encoder for timestamped transcription and speaker labels.
 
 ## Model
 
