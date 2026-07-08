@@ -9,8 +9,8 @@ OpenMOSS MOSS-Transcribe-Diarize is an audio-conditioned Qwen3 decoder with a Wh
 ## Usage
 
 ```swift
-let model = try await MossTranscribeDiarizeModel.fromPretrained(
-    "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+let model = try await STT.loadModel(
+    modelRepo: "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 )
 let output = model.generate(audio: audio)
 print(output.text)
